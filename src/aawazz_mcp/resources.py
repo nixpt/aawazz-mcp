@@ -1,6 +1,11 @@
 """MCP resources exposed by the server.
 
-Wave 2 wires this in — for now, just the schema for ``aawazz://health``:
+The ``aawazz://health`` resource handler is registered directly in
+:func:`aawazz_mcp.server.build_server` (Wave 2) — keeping it next to the
+FastMCP instance avoids a circular import (the handler closes over the
+dispatcher created inside ``build_server``).
+
+Schema for ``aawazz://health`` (SPEC §1.5)::
 
     {
         "version": "1.0.0",
@@ -9,8 +14,8 @@ Wave 2 wires this in — for now, just the schema for ``aawazz://health``:
         "models_loaded": {"tts": bool, "stt_archs": ["tiny_streaming", ...]},
         "capabilities": {"listen": bool, "play": bool}
     }
+
+The actual JSON is produced by :meth:`aawazz_mcp.dispatcher.Dispatcher.health`.
 """
 
 from __future__ import annotations
-
-# Wave 2: register on the FastMCP instance via @mcp.resource("aawazz://health").

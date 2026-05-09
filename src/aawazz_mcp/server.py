@@ -1,18 +1,22 @@
 """FastMCP server — tool registrations for speak / transcribe / listen / voices_list.
 
-Wave 0: ships :func:`build_server` that returns a FastMCP instance with the four
-tool stubs registered (raise NotImplementedError when called). This pins the
-tool surface so Wave 1A/1B/1C/1D agents have a stable contract.
+Wave 0: shipped :func:`build_server` returning a FastMCP instance with the four
+tool stubs registered (``raise NotImplementedError`` when called). This pinned
+the tool surface so Wave 1A/1B/1C/1D agents had a stable contract.
 
 Wave 2: replaces the stubs with real Dispatcher-backed implementations and adds
-the ``aawazz://health`` resource + lifespan hook.
+the ``aawazz://health`` resource + ``--warm`` lifespan hook.
 """
 
 from __future__ import annotations
 
+import json
+from contextlib import asynccontextmanager
+
 from mcp.server.fastmcp import FastMCP
 
 from aawazz_mcp.config import AawazzConfig
+from aawazz_mcp.dispatcher import Dispatcher
 
 INSTRUCTIONS_MD = """\
 # aawazz — voice for any agent
@@ -31,16 +35,31 @@ captain's `aawazz-mouth` / `aawazz-ears` FastAPI servers are running, pass
 
 
 def build_server(cfg: AawazzConfig) -> FastMCP:
-    """Construct the FastMCP server. Wave 2 wires real Dispatcher; Wave 0 stubs.
+    """Construct the FastMCP server with Dispatcher-backed tool implementations.
 
     Args:
         cfg: Resolved configuration (mode=local|remote, transport, warm, etc.).
 
     Returns:
         A FastMCP instance with `speak`, `transcribe`, `listen`, `voices_list`
-        tools registered and an `aawazz://health` resource.
+        tools registered, an `aawazz://health` resource, and a lifespan that
+        warms models on startup (when ``cfg.warm``) and ``aclose``s the
+        dispatcher on shutdown.
     """
-    mcp = FastMCP("aawazz", instructions=INSTRUCTIONS_MD)
+    dispatcher = Dispatcher(cfg)
+
+    @asynccontextmanager
+    async def lifespan(_mcp: FastMCP):
+        # Warm BEFORE yielding so the first request after startup hits warm
+        # models. aclose AFTER yield in finally so it runs even on shutdown error.
+        if cfg.warm:
+            await dispatcher.warm()
+        try:
+            yield {"dispatcher": dispatcher, "cfg": cfg}
+        finally:
+            await dispatcher.aclose()
+
+    mcp = FastMCP("aawazz", instructions=INSTRUCTIONS_MD, lifespan=lifespan)
 
     @mcp.tool()
     async def speak(  # noqa: D401
@@ -65,7 +84,13 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             ``{audio_path, duration_s, sample_rate, latency_ms, voice, speed,
             text_hash, played, backend}``.
         """
-        raise NotImplementedError("Wave 2: dispatch.speak(...) via Dispatcher")
+        return await dispatcher.speak(
+            text=text,
+            voice=voice,
+            speed=speed,
+            output_path=output_path,
+            play=play,
+        )
 
     @mcp.tool()
     async def transcribe(
@@ -87,7 +112,11 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
             language, audio_path, backend}``.
         """
-        raise NotImplementedError("Wave 2: dispatch.transcribe(...) via Dispatcher")
+        return await dispatcher.transcribe(
+            audio_path=audio_path,
+            language=language,
+            model_arch=model_arch,
+        )
 
     @mcp.tool()
     async def listen(
@@ -113,7 +142,12 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             If no input device is available (headless / sandboxed), returns a
             structured error rather than crashing the server.
         """
-        raise NotImplementedError("Wave 2: capture → dispatch.transcribe(...) via Dispatcher")
+        return await dispatcher.listen(
+            duration_s=duration_s,
+            language=language,
+            model_arch=model_arch,
+            save_audio=save_audio,
+        )
 
     @mcp.tool()
     async def voices_list() -> dict:
@@ -125,6 +159,16 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             ``{tts: {backend, voices}, stt: {backend, languages, model_archs},
             capabilities: {listen, play, backend_mode, remote_url}}``.
         """
-        raise NotImplementedError("Wave 2: synthesize from cfg + sounddevice probe")
+        return await dispatcher.voices_list()
+
+    @mcp.resource(
+        "aawazz://health",
+        name="health",
+        description="Backend mode, remote URLs, models-loaded flags, and capability probe.",
+        mime_type="application/json",
+    )
+    async def health() -> str:
+        """Return the health JSON (SPEC §1.5)."""
+        return json.dumps(await dispatcher.health(), indent=2)
 
     return mcp

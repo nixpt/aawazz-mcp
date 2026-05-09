@@ -26,6 +26,11 @@ __all__ = [
     "SttRequest",
     "SttResult",
     "SttProvider",
+    "LlmCapabilities",
+    "LlmRequest",
+    "LlmResult",
+    "LlmChunk",
+    "LlmProvider",
     "PostProcessor",
     "CaptureRequest",
     "CaptureResult",
@@ -201,6 +206,105 @@ class SttProvider(Protocol):
     def capabilities(self) -> SttCapabilities: ...
 
     async def transcribe(self, request: SttRequest) -> SttResult: ...
+
+    async def aclose(self) -> None: ...
+
+
+# ── LLM (v1.4) ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LlmCapabilities:
+    """Static capability profile for an :class:`LlmProvider`."""
+
+    available: bool
+    """Endpoint reachable / model loaded. False → routing chain skips us."""
+
+    requires_network: bool
+    supports_streaming: bool
+    supports_system_prompt: bool
+
+    backend_models: tuple[str, ...] = ()
+    """Models the provider can serve. For pipefish this is whatever pipefish's
+    ``/v1/models`` reports. Empty when ``available=False``."""
+
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class LlmRequest:
+    """Inputs for a single ``complete`` or ``stream`` call."""
+
+    messages: tuple[dict[str, str], ...]
+    """OpenAI-compat: ``[{role, content}, ...]``. Caller manages conversation
+    state; the provider doesn't persist anything."""
+
+    system_prompt: str | None = None
+    """Convenience: prepended as a ``system`` role message if not already
+    present in ``messages``. Load-bearing for adapter-flavored models
+    (e.g. bodhi reverts to Bonsai identity without a system prompt)."""
+
+    model: str | None = None
+    """Let the provider pick its default if None."""
+
+    max_tokens: int = 256
+    temperature: float = 0.7
+    top_p: float = 0.9
+    stop: tuple[str, ...] = ()
+    timeout_s: float = 30.0
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LlmResult:
+    """Outputs from a single ``complete`` call."""
+
+    text: str
+    model: str
+    """Whatever the provider reports back (may differ from request.model when
+    the upstream server has only one model loaded)."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    latency_ms: int
+    finish_reason: str
+    """One of ``"stop"`` / ``"length"`` / ``"error"``."""
+
+    language_detected: str | None = None
+    """Set by an optional langdetect post-step (phase 3); None in phase 1."""
+
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class LlmChunk:
+    """One streaming token-window chunk."""
+
+    text: str
+    """Incremental delta since the last chunk (NOT cumulative)."""
+
+    is_final: bool
+    language_detected: str | None = None
+
+
+@runtime_checkable
+class LlmProvider(Protocol):
+    """Generates text via an inference backend. v1.4.0 ships one concrete
+    implementation (``PipefishLlmProvider``); the Protocol stays open for
+    future direct-cloud providers (Anthropic, OpenAI) per the captain's
+    seahorse-first directive — those would be explicit exceptions."""
+
+    name: str
+    version: str
+
+    def capabilities(self) -> LlmCapabilities: ...
+
+    async def complete(self, request: LlmRequest) -> LlmResult: ...
+
+    async def stream(self, request: LlmRequest):
+        """Yield :class:`LlmChunk` per upstream SSE event. Implementations
+        without streaming raise :class:`ProviderError` — the dispatcher
+        falls back to ``complete``."""
 
     async def aclose(self) -> None: ...
 

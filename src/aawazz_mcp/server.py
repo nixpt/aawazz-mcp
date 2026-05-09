@@ -187,6 +187,67 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         )
 
     @mcp.tool()
+    async def respond(
+        prompt: str | None = None,
+        *,
+        messages: list[dict] | None = None,
+        system_prompt: str | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        tts_provider: str | None = None,
+        language: str = "en",
+        voice: str = "MALE",
+        speed: float = 1.0,
+        play: bool = False,
+        post_process: list[str] | None = None,
+        output_path: str | None = None,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        """Generate text via the routed LLM provider, then synthesize and
+        optionally play it. v1.4 phase 1 — batch only; streaming in phase 2.
+
+        Args:
+            prompt: One-shot user message. Mutually exclusive with ``messages``.
+            messages: OpenAI-compat ``[{role, content}, ...]`` for multi-turn.
+                Caller manages history.
+            system_prompt: Prepended to messages if not already present.
+                Load-bearing for adapter-flavoured models — bodhi reverts to
+                its base identity (Bonsai, sometimes in Russian) without one.
+            llm_provider: Override the LLM routing chain. Hard-fails if
+                unregistered or unavailable. Default chain: ``["pipefish"]``.
+            llm_model: Optional model name passed to the LLM provider.
+                For pipefish: any model from ``voices_list().providers.llm[*]
+                .backend_models``.
+            tts_provider / language / voice / speed / play / post_process /
+            output_path: forwarded to :func:`speak` after the LLM produces text.
+
+        Returns:
+            ``{text, audio_path, duration_s, sample_rate, played,
+            llm_provider, tts_provider, llm_latency_ms, tts_latency_ms,
+            total_latency_ms, prompt_tokens, completion_tokens, model,
+            finish_reason, language_detected, backend}``.
+        """
+        return await dispatcher.respond(
+            prompt=prompt,
+            messages=messages,
+            system_prompt=system_prompt,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            tts_provider=tts_provider,
+            language=language,
+            voice=voice,
+            speed=speed,
+            play=play,
+            post_process=post_process,
+            output_path=output_path,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_s=timeout_s,
+        )
+
+    @mcp.tool()
     async def voices_list() -> dict:
         """Return the voice / language / model-arch catalog plus capability probe.
 

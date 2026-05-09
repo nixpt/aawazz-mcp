@@ -35,6 +35,7 @@ from typing import Mapping
 
 from aawazz_mcp import registry as _registry
 from aawazz_mcp.provider_base import (
+    LlmProvider,
     ProviderError,
     SttProvider,
     TtsProvider,
@@ -53,18 +54,32 @@ _BUILTIN_DEFAULT_STT: dict[str, tuple[str, ...]] = {
     "ne": ("whisper",),
     "default": ("moonshine",),
 }
+# v1.4 LLM routing — flat preference list (LLMs aren't language-routed).
+# Default chain points at pipefish when [llm] extra is installed; if
+# pipefish is unreachable, ``Router.resolve_llm`` raises ProviderError
+# with the captain's diagnostic.
+_BUILTIN_DEFAULT_LLM: tuple[str, ...] = ("pipefish",)
 
 
 @dataclass(frozen=True)
 class RoutingConfig:
-    """Per-stage preference lists keyed by language; ``"default"`` is fallback."""
+    """Per-stage preference lists keyed by language; ``"default"`` is fallback.
+
+    LLM routing is flat (not language-keyed) — an :class:`LlmProvider` chain
+    is provider-preference order; first reachable wins.
+    """
 
     tts: Mapping[str, tuple[str, ...]]
     stt: Mapping[str, tuple[str, ...]]
+    llm: tuple[str, ...] = ()
 
     @classmethod
     def builtin_default(cls) -> "RoutingConfig":
-        return cls(tts=dict(_BUILTIN_DEFAULT_TTS), stt=dict(_BUILTIN_DEFAULT_STT))
+        return cls(
+            tts=dict(_BUILTIN_DEFAULT_TTS),
+            stt=dict(_BUILTIN_DEFAULT_STT),
+            llm=_BUILTIN_DEFAULT_LLM,
+        )
 
     @classmethod
     def load(
@@ -73,6 +88,7 @@ class RoutingConfig:
         *,
         tts_default_override: str | None = None,
         stt_default_override: str | None = None,
+        llm_default_override: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> "RoutingConfig":
         """Layer four config sources into a resolved routing map.
@@ -88,34 +104,42 @@ class RoutingConfig:
 
         tts: dict[str, tuple[str, ...]] = dict(_BUILTIN_DEFAULT_TTS)
         stt: dict[str, tuple[str, ...]] = dict(_BUILTIN_DEFAULT_STT)
+        llm: tuple[str, ...] = _BUILTIN_DEFAULT_LLM
 
         # Layer 2: config file.
         resolved_path = _resolve_config_path(file_path, env)
         if resolved_path is not None and resolved_path.exists():
             try:
-                file_tts, file_stt = _parse_toml(resolved_path)
+                file_tts, file_stt, file_llm = _parse_toml(resolved_path)
             except Exception:
                 log.exception("failed to parse routing config %s", resolved_path)
             else:
                 tts.update(file_tts)
                 stt.update(file_stt)
+                if file_llm is not None:
+                    llm = file_llm
                 log.debug("loaded routing config from %s", resolved_path)
 
         # Layer 3: env-var defaults.
         env_tts_default = (env.get("AAWAZZ_TTS_PROVIDER") or "").strip()
         env_stt_default = (env.get("AAWAZZ_STT_PROVIDER") or "").strip()
+        env_llm_default = (env.get("AAWAZZ_LLM_PROVIDER") or "").strip()
         if env_tts_default:
             tts["default"] = (env_tts_default,)
         if env_stt_default:
             stt["default"] = (env_stt_default,)
+        if env_llm_default:
+            llm = (env_llm_default,)
 
         # Layer 4: CLI overrides win.
         if tts_default_override:
             tts["default"] = (tts_default_override,)
         if stt_default_override:
             stt["default"] = (stt_default_override,)
+        if llm_default_override:
+            llm = (llm_default_override,)
 
-        return cls(tts=tts, stt=stt)
+        return cls(tts=tts, stt=stt, llm=llm)
 
 
 def _resolve_config_path(
@@ -130,14 +154,28 @@ def _resolve_config_path(
     return Path(xdg) / "aawazz" / "aawazz.toml"
 
 
-def _parse_toml(path: Path) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+def _parse_toml(
+    path: Path,
+) -> tuple[
+    dict[str, tuple[str, ...]],
+    dict[str, tuple[str, ...]],
+    tuple[str, ...] | None,
+]:
     import tomllib  # noqa: PLC0415
 
     with path.open("rb") as fh:
         doc = tomllib.load(fh)
     tts_raw = (doc.get("tts") or {}).get("routing") or {}
     stt_raw = (doc.get("stt") or {}).get("routing") or {}
-    return _coerce(tts_raw), _coerce(stt_raw)
+    llm_raw = (doc.get("llm") or {}).get("routing") or {}
+    llm_default = llm_raw.get("default")
+    if isinstance(llm_default, str):
+        llm: tuple[str, ...] | None = (llm_default,)
+    elif isinstance(llm_default, (list, tuple)):
+        llm = tuple(str(x) for x in llm_default)
+    else:
+        llm = None
+    return _coerce(tts_raw), _coerce(stt_raw), llm
 
 
 def _coerce(d: dict) -> dict[str, tuple[str, ...]]:
@@ -257,6 +295,59 @@ class Router:
         )
         raise ProviderError(msg)
 
+    # ── LLM ─────────────────────────────────────────────────────────────────
+
+    def resolve_llm(self, override: str | None = None) -> LlmProvider:
+        """Resolve an LLM provider. LLM routing is flat (no language axis):
+        ``override`` hard-fails if missing; otherwise iterate the chain and
+        pick the first registered + ``capabilities().available`` provider.
+        """
+        if override:
+            try:
+                provider = _registry.get_llm(override)
+            except KeyError as e:
+                registered = sorted(p.name for p in _registry.list_llm())
+                msg = (
+                    f"llm_provider {override!r} not registered; "
+                    f"registered: {registered}"
+                )
+                raise ProviderError(msg) from e
+            caps = provider.capabilities()
+            if not caps.available:
+                msg = (
+                    f"llm_provider {override!r} unavailable: {caps.notes}"
+                )
+                raise ProviderError(msg, hint=caps.notes)
+            return provider
+
+        chain = self.config.llm
+        tried: list[str] = []
+        for name in chain:
+            tried.append(name)
+            try:
+                provider = _registry.get_llm(name)
+            except KeyError:
+                log.debug("routing chain skip: llm %r not registered", name)
+                continue
+            caps = provider.capabilities()
+            if caps.available:
+                return provider
+            log.debug(
+                "routing chain skip: llm %r unavailable (%s)", name, caps.notes
+            )
+
+        msg = (
+            f"no llm provider in routing chain is available; "
+            f"chain tried: {tried}"
+        )
+        raise ProviderError(
+            msg,
+            hint=(
+                "install [llm] extra (httpx) and start pipefish, or set "
+                "AAWAZZ_PIPEFISH_URL to a reachable endpoint"
+            ),
+        )
+
     # ── Inspection (for voices_list, ops UX) ────────────────────────────────
 
     def tts_routing(self) -> dict[str, list[str]]:
@@ -264,3 +355,6 @@ class Router:
 
     def stt_routing(self) -> dict[str, list[str]]:
         return {k: list(v) for k, v in self.config.stt.items()}
+
+    def llm_routing(self) -> list[str]:
+        return list(self.config.llm)

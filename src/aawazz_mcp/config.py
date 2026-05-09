@@ -134,6 +134,7 @@ class AawazzConfig:
         routing_config_path: str | None = None,
         tts_default_override: str | None = None,
         stt_default_override: str | None = None,
+        llm_default_override: str | None = None,
     ) -> "AawazzConfig":
         """Apply the four-tier resolution order. Used by both classmethods."""
         env = env if env is not None else os.environ
@@ -167,6 +168,7 @@ class AawazzConfig:
             routing_config_path,
             tts_default_override=tts_default_override,
             stt_default_override=stt_default_override,
+            llm_default_override=llm_default_override,
             env=env,
         )
 
@@ -200,6 +202,7 @@ class AawazzConfig:
             routing_config_path=getattr(args, "routing_config", None),
             tts_default_override=getattr(args, "tts_default", None),
             stt_default_override=getattr(args, "stt_default", None),
+            llm_default_override=getattr(args, "llm_default", None),
         )
 
     @classmethod

@@ -78,6 +78,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Built-in: moonshine. Per-call ``stt_provider=`` still wins."
         ),
     )
+    p.add_argument(
+        "--llm-default",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Provider name for the default LLM chain (overrides config + env). "
+            "Built-in: pipefish. Per-call ``llm_provider=`` still wins. "
+            "Only meaningful when the [llm] extra is installed."
+        ),
+    )
     return p
 
 

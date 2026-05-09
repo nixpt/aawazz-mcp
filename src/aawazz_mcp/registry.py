@@ -27,6 +27,7 @@ from typing import Callable, TypeVar
 
 from aawazz_mcp.provider_base import (
     CaptureProvider,
+    LlmProvider,
     PlaybackProvider,
     PostProcessor,
     SttProvider,
@@ -39,6 +40,7 @@ log = logging.getLogger("aawazz_mcp.registry")
 ENTRY_POINT_GROUPS: dict[str, str] = {
     "tts": "aawazz.tts_providers",
     "stt": "aawazz.stt_providers",
+    "llm": "aawazz.llm_providers",
     "post": "aawazz.post_processors",
     "capture": "aawazz.capture_providers",
     "playback": "aawazz.playback_providers",
@@ -49,6 +51,7 @@ ENTRY_POINT_GROUPS: dict[str, str] = {
 class _Registry:
     tts: dict[str, TtsProvider] = field(default_factory=dict)
     stt: dict[str, SttProvider] = field(default_factory=dict)
+    llm: dict[str, LlmProvider] = field(default_factory=dict)
     post: dict[str, PostProcessor] = field(default_factory=dict)
     capture: dict[str, CaptureProvider] = field(default_factory=dict)
     playback: dict[str, PlaybackProvider] = field(default_factory=dict)
@@ -113,6 +116,7 @@ def _make_decorator(
 
 register_tts = _make_decorator("tts", _REGISTRY.tts)
 register_stt = _make_decorator("stt", _REGISTRY.stt)
+register_llm = _make_decorator("llm", _REGISTRY.llm)
 register_post = _make_decorator("post", _REGISTRY.post)
 register_capture = _make_decorator("capture", _REGISTRY.capture)
 register_playback = _make_decorator("playback", _REGISTRY.playback)
@@ -143,6 +147,16 @@ def get_stt(name: str) -> SttProvider:
         )
         raise KeyError(msg)
     return _REGISTRY.stt[name]
+
+
+def get_llm(name: str) -> LlmProvider:
+    if name not in _REGISTRY.llm:
+        msg = (
+            f"llm provider {name!r} not registered. "
+            f"Available: {sorted(_REGISTRY.llm.keys())}"
+        )
+        raise KeyError(msg)
+    return _REGISTRY.llm[name]
 
 
 def get_post(name: str) -> PostProcessor:
@@ -181,6 +195,10 @@ def list_tts() -> list[TtsProvider]:
 
 def list_stt() -> list[SttProvider]:
     return list(_REGISTRY.stt.values())
+
+
+def list_llm() -> list[LlmProvider]:
+    return list(_REGISTRY.llm.values())
 
 
 def list_post() -> list[PostProcessor]:
@@ -242,6 +260,7 @@ def reset() -> None:
     global _PLUGINS_DISCOVERED
     _REGISTRY.tts.clear()
     _REGISTRY.stt.clear()
+    _REGISTRY.llm.clear()
     _REGISTRY.post.clear()
     _REGISTRY.capture.clear()
     _REGISTRY.playback.clear()

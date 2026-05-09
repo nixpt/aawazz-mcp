@@ -91,6 +91,12 @@ class Dispatcher:
         """Always local — mic lives on this host."""
         return await self._ensure_local().listen(**kwargs)
 
+    async def respond(self, **kwargs) -> dict:
+        """v1.4 LLM-bridge tool — always local (LLM provider may itself be
+        an HTTP client to a remote endpoint, but the bridge orchestration
+        lives in :class:`LocalBackend`)."""
+        return await self._ensure_local().respond(**kwargs)
+
     # ----- Metadata / probes -------------------------------------------------
 
     async def voices_list(self) -> dict:
@@ -154,6 +160,20 @@ class Dispatcher:
                 "direction": p.direction,
             })
 
+        llm_providers = []
+        for p in _registry.list_llm():
+            caps = p.capabilities()
+            llm_providers.append({
+                "name": p.name,
+                "version": getattr(p, "version", "unknown"),
+                "available": caps.available,
+                "supports_streaming": caps.supports_streaming,
+                "supports_system_prompt": caps.supports_system_prompt,
+                "backend_models": list(caps.backend_models),
+                "endpoint": getattr(p, "base_url", None),
+                "notes": caps.notes,
+            })
+
         capture_providers = []
         for p in _registry.list_capture():
             capture_providers.append({
@@ -174,6 +194,7 @@ class Dispatcher:
         routing = {
             "tts": {k: list(v) for k, v in self.cfg.routing.tts.items()},
             "stt": {k: list(v) for k, v in self.cfg.routing.stt.items()},
+            "llm": {"default": list(self.cfg.routing.llm)},
         }
 
         # ── v1 alias views (back-compat for callers on the old shape) ──────
@@ -207,6 +228,7 @@ class Dispatcher:
             "providers": {
                 "tts": tts_providers,
                 "stt": stt_providers,
+                "llm": llm_providers,
                 "post_processors": post_processors,
                 "capture": capture_providers,
                 "playback": playback_providers,

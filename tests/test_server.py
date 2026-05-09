@@ -24,14 +24,14 @@ from aawazz_mcp.server import build_server
 # ---------------------------------------------------------------------------
 
 
-def test_build_server_registers_4_tools_and_health_resource(
+def test_build_server_registers_5_tools_and_health_resource(
     clean_aawazz_env: None,
 ) -> None:
-    """The four contract tools + the health resource are registered."""
+    """v1.0 contract tools + v1.4 ``respond`` + the health resource."""
     mcp = build_server(AawazzConfig.from_env())
 
     tool_names = {t.name for t in mcp._tool_manager.list_tools()}
-    assert tool_names == {"speak", "transcribe", "listen", "voices_list"}
+    assert tool_names == {"speak", "transcribe", "listen", "voices_list", "respond"}
 
     resource_uris = {str(r.uri) for r in mcp._resource_manager.list_resources()}
     assert "aawazz://health" in resource_uris
@@ -40,14 +40,14 @@ def test_build_server_registers_4_tools_and_health_resource(
 def test_build_server_remote_mode_registers_same_tool_surface(
     clean_aawazz_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Tool surface is mode-independent — agents see the same 4 names always."""
+    """Tool surface is mode-independent — agents see the same 5 names always."""
     monkeypatch.setenv("AAWAZZ_REMOTE_URL", "http://r:7860")
     cfg = AawazzConfig.from_env()
     assert cfg.mode == "remote"
 
     mcp = build_server(cfg)
     tool_names = {t.name for t in mcp._tool_manager.list_tools()}
-    assert tool_names == {"speak", "transcribe", "listen", "voices_list"}
+    assert tool_names == {"speak", "transcribe", "listen", "voices_list", "respond"}
 
 
 def test_tool_descriptions_carry_docstrings(clean_aawazz_env: None) -> None:

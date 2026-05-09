@@ -39,6 +39,7 @@ from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.models.stt_loader import _arch_from_string
 from aawazz_mcp.provider_base import (
     CaptureRequest,
+    LlmRequest,
     ProviderError,
     SttRequest,
     TtsRequest,
@@ -681,3 +682,139 @@ class LocalBackend(Backend):
                 log.warning("could not unlink temp capture %s", capture_path)
 
         return result
+
+    # ------------------------------------------------------------------ respond
+
+    async def respond(
+        self,
+        prompt: str | None = None,
+        *,
+        messages: list[dict] | None = None,
+        system_prompt: str | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        tts_provider: str | None = None,
+        language: str = "en",
+        voice: str = "MALE",
+        speed: float = 1.0,
+        play: bool = False,
+        post_process: list[str] | None = None,
+        output_path: str | None = None,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        """v1.4 LLM-bridge: generate text via the routed LLM provider, then
+        synthesize via the existing speak path. See SPEC_v1.4 §6.
+
+        Either ``prompt`` (one-shot user message) or ``messages``
+        (multi-turn caller-managed state) must be provided. ``system_prompt``
+        is prepended automatically if not present in ``messages``.
+        """
+        # Input validation.
+        if (prompt is None or not str(prompt).strip()) and not messages:
+            return _err(
+                "respond requires either prompt or messages",
+                hint="pass prompt=<one-shot text> or messages=[{role,content},...]",
+            )
+        if prompt and messages:
+            return _err(
+                "pass prompt OR messages, not both",
+            )
+
+        if prompt:
+            msgs: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        else:
+            # mypy/ruff: messages was just confirmed truthy
+            msgs = [dict(m) for m in (messages or [])]
+
+        # Resolve LLM provider via the routing chain.
+        try:
+            llm = self._router.resolve_llm(override=llm_provider)
+        except ProviderError as e:
+            return _err(
+                str(e),
+                hint=e.hint,
+                requested_llm_provider=llm_provider,
+            )
+
+        # LLM call.
+        llm_req = LlmRequest(
+            messages=tuple(msgs),
+            system_prompt=system_prompt,
+            model=llm_model,
+            max_tokens=int(max_tokens),
+            temperature=float(temperature),
+            timeout_s=float(timeout_s),
+        )
+        try:
+            llm_result = await llm.complete(llm_req)
+        except ProviderError as e:
+            return _err(
+                str(e),
+                hint=e.hint,
+                requested_llm_provider=llm.name,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("llm complete failed via %s", llm.name)
+            return _err(
+                f"llm complete failed: {e}",
+                requested_llm_provider=llm.name,
+            )
+
+        if not llm_result.text:
+            return _err(
+                "llm returned empty text",
+                requested_llm_provider=llm.name,
+                requested_llm_model=llm_model or llm_result.model,
+                finish_reason=llm_result.finish_reason,
+            )
+
+        # TTS via existing speak path. Carries DSP / post_process / playback
+        # behavior verbatim — no special-casing for respond.
+        speak_result = await self.speak(
+            text=llm_result.text,
+            voice=voice,
+            speed=float(speed),
+            output_path=output_path,
+            play=play,
+            language=language,
+            tts_provider=tts_provider,
+            post_process=post_process,
+        )
+
+        if "error" in speak_result:
+            return {
+                "text": llm_result.text,
+                "error": speak_result["error"],
+                "model": llm_result.model,
+                "llm_provider": llm.name,
+                "llm_latency_ms": llm_result.latency_ms,
+                "prompt_tokens": llm_result.prompt_tokens,
+                "completion_tokens": llm_result.completion_tokens,
+                "finish_reason": llm_result.finish_reason,
+                "audio_path": None,
+                "tts_provider": speak_result.get("provider"),
+                "backend": "local",
+            }
+
+        return {
+            "text": llm_result.text,
+            "audio_path": speak_result["audio_path"],
+            "duration_s": speak_result["duration_s"],
+            "sample_rate": speak_result["sample_rate"],
+            "played": speak_result["played"],
+            "voice": speak_result.get("voice"),
+            "model": llm_result.model,
+            "llm_provider": llm.name,
+            "tts_provider": speak_result.get("provider"),
+            "llm_latency_ms": llm_result.latency_ms,
+            "tts_latency_ms": speak_result["latency_ms"],
+            "total_latency_ms": llm_result.latency_ms + speak_result["latency_ms"],
+            "prompt_tokens": llm_result.prompt_tokens,
+            "completion_tokens": llm_result.completion_tokens,
+            "finish_reason": llm_result.finish_reason,
+            "post_process_chain": speak_result.get("post_process_chain", []),
+            "language_detected": llm_result.language_detected,
+            "backend": "local",
+        }

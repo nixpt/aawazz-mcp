@@ -427,6 +427,40 @@ add `--remote` to delegate to an `aawazz-ears` FastAPI service.
 
 ---
 
+## Voice profiles & multilingual
+
+English speak/listen/transcribe work out of the box with the base install. Two opt-in extensions broaden the surface:
+
+### Voice profiles (DSP, no extra deps)
+
+`speak(voice=...)` accepts seven post-processing profiles applied to the tiny-tts output. Pure numpy, zero new dependencies.
+
+| Profile  | Effect                                                |
+| -------- | ----------------------------------------------------- |
+| `MALE`   | Default tiny-tts, no post-processing                  |
+| `DEEP`   | Lower pitch + warm lowpass                            |
+| `BRIGHT` | Higher pitch + airy highpass                          |
+| `SOFT`   | Smoothed lowpass at 3 kHz                             |
+| `GRAVEL` | Soft saturation + slight pitch-down                   |
+| `ROBOT`  | Rectify + bandpass — classic vocoder feel             |
+| `ECHO`   | Single echo tap at 300 ms, 40% decay                  |
+| `WIDE`   | Pitch-up + Schroeder reverb tail                      |
+
+### Multilingual (optional extras)
+
+```bash
+pip install "aawazz-mcp[multilingual]"
+```
+
+This pulls `gtts`, `transformers`, and `torch`. With them installed:
+
+- **`speak(language=...)`** — non-English languages route through gTTS (Google TTS, requires internet). English continues to use tiny-tts + DSP profiles.
+- **`transcribe(language=...)`** / **`listen(language=...)`** — Moonshine covers `en, es, zh, ja, ko, ar, vi, uk`; Nepali (`ne`) routes through a Whisper-Small model (`amitpant7/Nepali-Automatic-Speech-Recognition`) downloaded on first use.
+
+Without the extras, calling `speak` with a non-English language returns a structured error, and `transcribe`/`listen` with `ne` raises `ImportError` for `transformers`.
+
+---
+
 ## Tools
 
 Four tools and one resource. Tool docstrings become MCP tool descriptions verbatim — what your agent sees in `tools/list` mirrors the contracts below.

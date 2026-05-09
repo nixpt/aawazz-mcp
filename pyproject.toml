@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aawazz-mcp"
-version = "1.1.3"
+version = "1.2.0"
 description = "Portable local-CPU TTS + STT MCP server (Hindi/Urdu/Nepali आवाज़ — voice/sound). Bundles tiny-tts + Moonshine; optional remote-FastAPI mode."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -42,6 +42,13 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
+]
+# Optional: enable non-English speak() (gTTS) and Nepali transcribe() (Whisper).
+# English speak/listen/transcribe work without these.
+multilingual = [
+    "gtts>=2.5",
+    "transformers>=4.40",
+    "torch>=2.0",
 ]
 
 [project.scripts]

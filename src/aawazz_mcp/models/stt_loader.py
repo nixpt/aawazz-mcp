@@ -26,9 +26,8 @@ log = logging.getLogger("aawazz_mcp.stt_loader")
 def _arch_from_string(name: str):
     """Translate the SPEC's lowercase ``model_arch`` strings to ``ModelArch``.
 
-    Lifts the s144 ears server's ``_arch_from_string`` — accepts ``tiny``,
-    ``tiny_streaming`` / ``tiny-streaming``, etc. Raises ``ValueError`` with
-    the valid set on miss.
+    Accepts ``tiny``, ``tiny_streaming`` / ``tiny-streaming``, etc. Raises
+    ``ValueError`` with the valid set on miss.
     """
     from moonshine_voice import ModelArch
 
@@ -132,8 +131,8 @@ class SttLoader:
             )
             latency_ms = int((time.time() - t0) * 1000)
 
-        # Lifted from s144 ears server: don't ``str(transcript)`` because that
-        # includes a ``[<start>s] `` prefix per line. Concatenate clean text.
+        # Don't ``str(transcript)`` — Moonshine's __str__ includes a
+        # ``[<start>s] `` prefix per line. Concatenate the clean text instead.
         lines = getattr(transcript, "lines", None) or []
         text = " ".join(
             line.text.strip()

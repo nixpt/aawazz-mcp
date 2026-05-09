@@ -1,10 +1,8 @@
 """CLI entry point for aawazz-mcp.
 
-Wave 0: argparse skeleton with the flags Wave 1B/2 will read from
-:class:`aawazz_mcp.config.AawazzConfig`.
-
-Wave 2: full implementation — build the FastMCP server via
-:func:`aawazz_mcp.server.build_server` and run it.
+Parses argv into an :class:`aawazz_mcp.config.AawazzConfig`, builds the FastMCP
+server via :func:`aawazz_mcp.server.build_server`, and runs it on the requested
+transport.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Wave 2: parse args → AawazzConfig → build_server(cfg) → mcp.run()."""
+    """Parse args → AawazzConfig → build_server(cfg) → mcp.run()."""
     args = _build_parser().parse_args(argv)
     # NEVER log to stdout under stdio transport — corrupts the MCP frame stream.
     logging.basicConfig(

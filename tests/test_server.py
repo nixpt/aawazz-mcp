@@ -1,4 +1,4 @@
-"""Tests for the assembled FastMCP server (Wave 2).
+"""Tests for the assembled FastMCP server.
 
 In-memory exercises only — never call ``mcp.run()`` (it blocks on stdio).
 We poke ``mcp._tool_manager`` / ``mcp._resource_manager`` to inspect
@@ -51,7 +51,7 @@ def test_build_server_remote_mode_registers_same_tool_surface(
 
 
 def test_tool_descriptions_carry_docstrings(clean_aawazz_env: None) -> None:
-    """The Wave 0 docstrings ARE the MCP tool descriptions — verify they survived."""
+    """Tool docstrings ARE the MCP tool descriptions — verify they survive registration."""
     mcp = build_server(AawazzConfig.from_env())
     tools = {t.name: t for t in mcp._tool_manager.list_tools()}
 

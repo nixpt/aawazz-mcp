@@ -1,11 +1,9 @@
 """FastMCP server — tool registrations for speak / transcribe / listen / voices_list.
 
-Wave 0: shipped :func:`build_server` returning a FastMCP instance with the four
-tool stubs registered (``raise NotImplementedError`` when called). This pinned
-the tool surface so Wave 1A/1B/1C/1D agents had a stable contract.
-
-Wave 2: replaces the stubs with real Dispatcher-backed implementations and adds
-the ``aawazz://health`` resource + ``--warm`` lifespan hook.
+:func:`build_server` returns a FastMCP instance with the four tools registered,
+the ``aawazz://health`` resource exposed, and a lifespan async context manager
+that warms models on startup (when ``cfg.warm``) and ``aclose``s the dispatcher
+on shutdown.
 """
 
 from __future__ import annotations
@@ -28,9 +26,9 @@ Local-CPU TTS + STT MCP server. Tools:
 - `listen(duration_s=5.0, language="en")` — capture mic for `duration_s` and transcribe.
 - `voices_list()` — voice/language/model catalog + capability probe (no model load).
 
-By default this server bundles its own copies of tiny-tts and Moonshine. If the
-captain's `aawazz-mouth` / `aawazz-ears` FastAPI servers are running, pass
-`--remote http://127.0.0.1:7861,http://127.0.0.1:7862` to delegate.
+By default this server bundles its own copies of tiny-tts and Moonshine. If you
+have an `aawazz-mouth` / `aawazz-ears` FastAPI pair running on the same host,
+pass `--remote http://127.0.0.1:7861,http://127.0.0.1:7862` to delegate.
 """
 
 

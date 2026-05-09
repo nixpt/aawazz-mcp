@@ -1,7 +1,5 @@
 """Bounded mic capture via sounddevice → WAV.
 
-Wave 1C owns this module.
-
 Contract:
     has_input_device() -> bool
     record_to_wav(duration_s, output_path, sample_rate=16000) -> dict
@@ -27,7 +25,7 @@ from typing import Any
 
 _LOG = logging.getLogger("aawazz.audio")
 
-# Hard caps — keep in sync with docstring and tool docs in Wave 2.
+# Hard caps — keep in sync with docstring and the `listen` tool docstring.
 _MIN_DURATION_S = 0.5
 _MAX_DURATION_S = 30.0
 
@@ -36,7 +34,7 @@ def clamp_duration(duration_s: float) -> float:
     """Clamp recording duration to ``[0.5, 30.0]`` seconds.
 
     Exposed so tests can assert clamping behaviour without a real mic, and so
-    Wave 2 can reuse the exact same bounds in the tool docstring.
+    the `listen` tool docstring can document the same bounds.
     """
     if duration_s < _MIN_DURATION_S:
         return _MIN_DURATION_S

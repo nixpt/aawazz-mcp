@@ -1,8 +1,8 @@
 """Audio playback via subprocess shellout. paplay → aplay → afplay probe order.
 
-Wave 1C owns this module. Reference: existing joker-mcp ``maybe_autoplay`` in
-``crates/ai/services/joker-mcp/src/modalities.rs`` for the player probe order
-and the captain's ``AAWAZZ_AUTOPLAY=1`` opt-in convention.
+The probe order matches the conventional Linux/macOS desktop fallback chain:
+PulseAudio first (Linux desktop), ALSA second (Linux server / fallback),
+CoreAudio third (macOS).
 
 Contract:
     has_player() -> bool                          # any of paplay/aplay/afplay on PATH
@@ -18,8 +18,7 @@ import subprocess
 _LOG = logging.getLogger("aawazz.audio")
 
 # Probe order: PulseAudio first (Linux desktop), ALSA next (Linux fallback /
-# server / sandbox), CoreAudio last (macOS). Matches joker-mcp's
-# ``maybe_autoplay`` convention.
+# server / sandbox), CoreAudio last (macOS).
 _PLAYERS: tuple[str, ...] = ("paplay", "aplay", "afplay")
 
 # Hard cap on a single play() call. We don't know the audio duration here, so

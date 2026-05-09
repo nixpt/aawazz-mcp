@@ -1,9 +1,9 @@
 """MCP resources exposed by the server.
 
 The ``aawazz://health`` resource handler is registered directly in
-:func:`aawazz_mcp.server.build_server` (Wave 2) — keeping it next to the
-FastMCP instance avoids a circular import (the handler closes over the
-dispatcher created inside ``build_server``).
+:func:`aawazz_mcp.server.build_server` — keeping it next to the FastMCP
+instance avoids a circular import (the handler closes over the dispatcher
+created inside ``build_server``).
 
 Schema for ``aawazz://health`` (SPEC §1.5)::
 

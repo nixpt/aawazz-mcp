@@ -2,12 +2,10 @@
 
 CRITICAL — stdout safety:
     ``tiny_tts.TinyTTS.speak()`` does ``print(f"Synthesizing: ...")`` and
-    ``print(f"Saved audio to ...")`` directly to stdout (see
-    ``/build/venv-aawazz/lib/python3.12/site-packages/tiny_tts/__init__.py``
-    around line 41 + 101). Under FastMCP stdio transport stdout carries
-    JSON-RPC frames; any rogue ``print`` corrupts the wire and hangs the
-    runtime. EVERY ``self._tts.speak(...)`` invocation MUST be wrapped in
-    :func:`stdout_to_stderr`.
+    ``print(f"Saved audio to ...")`` directly to stdout. Under FastMCP stdio
+    transport stdout carries JSON-RPC frames; any rogue ``print`` corrupts
+    the wire and hangs the runtime. EVERY ``self._tts.speak(...)``
+    invocation MUST be wrapped in :func:`stdout_to_stderr`.
 
 CRITICAL — concurrent calls:
     ``TinyTTS`` is not thread-safe (mutates a torch model in-place). FastMCP
@@ -58,8 +56,6 @@ def _ensure_nltk_data() -> None:
     Idempotent — NLTK skips already-present packages. Bounded so a flaky
     network at first-call doesn't hang the runtime; on failure we log and let
     the synth attempt surface the real error.
-
-    Lifted verbatim from ``~/.local/aawazz/mouth/server.py:_ensure_nltk_data``.
     """
     try:
         import nltk
@@ -126,8 +122,8 @@ class TtsLoader:
         """Synthesize ``text`` to ``output_path``. Returns soundfile metadata.
 
         Caller is responsible for voice validation; this method passes ``voice``
-        straight to ``tiny_tts.TinyTTS.speak``. The s144 server downgrades
-        unknown voices silently — we tighten in :class:`LocalBackend`.
+        straight to ``tiny_tts.TinyTTS.speak``. :class:`LocalBackend` rejects
+        unknown voices with a structured error rather than silently downgrading.
 
         Returns:
             ``{audio_path, duration_s, sample_rate, latency_ms}``.

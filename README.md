@@ -1,6 +1,6 @@
 # aawazz-mcp
 
-> **आवाज़** — Hindi/Urdu for *voice / sound*.
+> **आवाज़** — Hindi/Urdu/Nepali for *voice / sound*.
 
 A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks the Model Context Protocol — Claude Code, Claude Desktop, Codex, Cursor, Zed, Cline, Continue, Goose, Gemini CLI. One `pip install` and four tools (`speak`, `transcribe`, `listen`, `voices_list`) light up across every runtime simultaneously. Bundles [tiny-tts](https://github.com/backtracking/tiny-tts) (~3.4 MB ONNX) and [Useful Sensors / Moonshine](https://github.com/usefulsensors/moonshine) (~80 MB ONNX) so it runs offline once weights are cached; an optional `--remote` mode delegates to a separately-running FastAPI mouth/ears so model load doesn't double up on machines that already have those services.
 
@@ -67,7 +67,7 @@ Once Claude Code reloads, ask the model to *"say hello using aawazz"* and you sh
 
 Every runtime below talks to `aawazz-mcp` over stdio. The bare-minimum invocation is identical (`command: aawazz-mcp`, no args); the differences live in **where the config file lives** and **how the runtime picks up changes**. Copy-paste blocks below match exactly the files in [`examples/clients/`](examples/clients/) — pull from there if your editor mangles JSON.
 
-The optional `env:` table on each block enables [hybrid mode](#hybrid-mode-advanced) — uncomment if you've got the s144 systemd-user services on this host.
+The optional `env:` table on each block enables [hybrid mode](#hybrid-mode-advanced) — uncomment if you have an `aawazz-mouth` / `aawazz-ears` FastAPI pair already running on this host.
 
 ### Claude Code
 
@@ -283,11 +283,11 @@ extensions:
 
 ## Hybrid mode (advanced)
 
-If you're a captain running the s144 systemd-user services (`aawazz-mouth` on `:7861`, `aawazz-ears` on `:7862`), you don't want this MCP server to load its own copies of tiny-tts and Moonshine on every runtime spawn. Hybrid mode delegates to the FastAPI services instead.
+If you have `aawazz-mouth` and `aawazz-ears` running as separate FastAPI services on this host (typical setup: systemd-user units on `:7861` and `:7862`), you don't want this MCP server to load its own copies of tiny-tts and Moonshine on every runtime spawn. Hybrid mode delegates to those FastAPI services instead.
 
 **Why bother**
-- Existing FastAPI services stay useful (the joker-mcp Rust arm and other clients keep hitting them).
-- Model load happens once, in the systemd unit — not per MCP-runtime subprocess.
+- Existing FastAPI services stay useful — other clients on the same host can keep hitting them in parallel.
+- Model load happens once, in the long-running service — not per MCP-runtime subprocess.
 - ~600 MB of torch state is held in one place, not duplicated across every Claude Code / Cursor / Zed window.
 
 **How**
@@ -298,7 +298,7 @@ CLI flag form (joint base for both services, overrideable per-service via env):
 aawazz-mcp --remote http://127.0.0.1:7861,http://127.0.0.1:7862
 ```
 
-Per-service env-var form (matches the joker-mcp Rust arm exactly):
+Per-service env-var form (independent overrides for mouth and ears):
 
 ```bash
 AAWAZZ_MOUTH_URL=http://127.0.0.1:7861/tts \
@@ -349,7 +349,7 @@ speak({"text": "Hello world", "voice": "MALE", "play": true})
 Transcribe a WAV file (local path or `http(s)://` URL). Returns `{text, audio_duration_s, sample_rate, latency_ms, model_arch, language, audio_path, backend}`.
 
 - `audio_path` — absolute path or `http(s)://` URL. URL inputs are downloaded to `${TMPDIR}/aawazz-stt-<sha8>.wav` and unlinked after.
-- `model_arch` — `tiny | tiny_streaming | base | base_streaming | small_streaming | medium_streaming`. Default `tiny_streaming` matches the s144 ears service.
+- `model_arch` — `tiny | tiny_streaming | base | base_streaming | small_streaming | medium_streaming`. Default `tiny_streaming` is the recommended balance of speed/accuracy for English on CPU.
 
 Example:
 ```

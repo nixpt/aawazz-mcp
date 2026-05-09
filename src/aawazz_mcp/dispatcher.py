@@ -94,10 +94,9 @@ class Dispatcher:
     async def voices_list(self) -> dict:
         """Pure metadata; no model load. Synthesised from cfg + capability probes.
 
-        Capability probes call into ``aawazz_mcp.audio.{capture,playback}`` —
-        Wave 1C provides those. Until 1C lands, the calls raise
-        ``NotImplementedError``; we let them bubble (Wave 2 ordering guarantees
-        1C is in place before this is exercised).
+        Capability probes call into ``aawazz_mcp.audio.{capture,playback}``
+        for the listen/play flags — both modules are defensively coded to
+        return False rather than raise on missing devices.
         """
         # Imported lazily so importing the dispatcher module never triggers
         # sounddevice / subprocess probes at module-load time.

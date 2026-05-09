@@ -56,8 +56,8 @@ async def test_remote_speak_round_trip(both_servers_up: bool) -> None:  # noqa: 
     assert "error" not in out, out
     assert out["backend"] == "remote"
     assert out["audio_path"]
-    # tiny-tts has historically emitted 22050 but the s144 server resamples to
-    # 44100. Accept either; verify it's positive.
+    # tiny-tts emits 22050 natively; the FastAPI server resamples to 44100
+    # before returning. Accept either; verify it's positive.
     assert out["sample_rate"] in (22050, 44100)
     assert out["text_hash"]
 

@@ -1,6 +1,6 @@
 """Tests for AawazzConfig resolution + Dispatcher routing.
 
-Wave 1B coverage:
+Coverage:
 
 - Config: env-only / args-vs-env precedence / split mode / URL normalisation.
 - Dispatcher: listen-always-local override, structured-error on unreachable.
@@ -366,7 +366,7 @@ async def test_voices_list_metadata_only(
     cfg = AawazzConfig.from_env()
     d = Dispatcher(cfg)
 
-    # Stub the capability probes (Wave 1C) so the test passes pre-1C-merge.
+    # Stub the capability probes so the test doesn't depend on host audio devices.
     with patch("aawazz_mcp.audio.capture.has_input_device", return_value=True), \
             patch("aawazz_mcp.audio.playback.has_player", return_value=True):
         meta = await d.voices_list()

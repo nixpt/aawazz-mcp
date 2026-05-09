@@ -1,4 +1,4 @@
-"""Wave 1C audio I/O — capability probes + bounded mic capture.
+"""Audio I/O — capability probes + bounded mic capture.
 
 Most tests don't need a real mic — they just check that the capability probes
 return booleans and degrade cleanly. The ``@pytest.mark.mic`` test does a
@@ -39,7 +39,7 @@ def test_has_player_returns_bool() -> None:
 
 @pytest.mark.skipif(not shutil.which("paplay"), reason="no paplay on PATH")
 def test_has_player_finds_paplay() -> None:
-    """When paplay is on PATH (captain's box), has_player() must return True."""
+    """When paplay is on PATH, has_player() must return True."""
     assert has_player() is True
 
 

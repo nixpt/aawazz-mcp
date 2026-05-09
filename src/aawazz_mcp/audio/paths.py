@@ -1,8 +1,8 @@
 """Path helpers — default output dir, tempdir fallback, hash-stamped naming.
 
-Wave 0 ships :func:`default_output_dir` because Wave 1A and Wave 1B both need
-the same answer; centralizing keeps them aligned. The full implementation here
-covers naming + tempdir fallback so Wave 1A only needs to read.
+Centralised so the local and remote backends, plus any test that wants to
+predict an output path, all see the same answer. ``default_output_dir`` falls
+back to a tempdir if ``$AAWAZZ_HOME`` isn't writable (sandboxed runtimes).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def default_output_dir() -> Path:
 
 
 def hashed_wav_name(text: str) -> str:
-    """Naming convention matching the s144 mouth server: ``<utc-ts>-<sha8>.wav``.
+    """Timestamped + content-hashed WAV name: ``<utc-ts>-<sha8>.wav``.
 
     Format: ``YYYYMMDDTHHMMSSZ-<8-char-sha1-hex>.wav`` — sortable, idempotent
     per (text, second).

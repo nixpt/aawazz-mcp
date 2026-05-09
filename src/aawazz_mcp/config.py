@@ -13,13 +13,13 @@ Resolution priority (highest first):
 set, that side goes remote and the other side falls back to the local backend.
 ``mode`` is reported as ``"remote"`` because *some* tool will route through
 httpx; the dispatcher per-tool routing handles the asymmetry. ``cfg.summary()``
-reports the split explicitly so Wave 2's startup banner can surface it.
+reports the split explicitly so the CLI startup banner can surface it.
 
 URL normalisation lives in :func:`_normalise_mouth_url` /
 :func:`_normalise_ears_url`: a bare ``http://host:port`` gets the canonical
 endpoint suffix appended, while a URL that already includes the path is left
-alone. This mirrors the existing Rust arm in ``joker-mcp::modalities`` so the
-two backends are wire-compatible against the same FastAPI servers.
+alone. The remote backend is wire-compatible with any standard
+``aawazz-mouth`` / ``aawazz-ears`` FastAPI installation.
 """
 
 from __future__ import annotations
@@ -171,13 +171,13 @@ class AawazzConfig:
 
     @classmethod
     def from_env(cls) -> "AawazzConfig":
-        """Pure-env resolution (used by tests + Wave 2 lifespan setup)."""
+        """Pure-env resolution (used by tests + lifespan setup)."""
         return cls._resolve(cli_remote=None)
 
     # ----- Diagnostics -------------------------------------------------------
 
     def summary(self) -> str:
-        """One-line human summary; Wave 2 uses this in the startup banner."""
+        """One-line human summary; the CLI uses this in the startup banner."""
         if self.mode == "local":
             return "aawazz-mcp mode=local (bundled tiny-tts + moonshine)"
         # Remote — note split if only one side is set.

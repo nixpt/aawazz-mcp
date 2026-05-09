@@ -12,9 +12,9 @@ CRITICAL — stdout safety:
     through the loader.
 
 CRITICAL — voice validation:
-    tiny-tts only ships ``MALE``. The s144 server downgrades unknown voices
-    silently; v1.0 rejects with a structured error so callers can detect
-    misconfig. ``available_voices`` lifts ``SPK2ID.keys()`` from tiny-tts.
+    tiny-tts only ships ``MALE``. We reject unknown voices with a structured
+    error rather than silently downgrading, so callers can detect misconfig.
+    ``available_voices`` lifts ``SPK2ID.keys()`` from tiny-tts.
 
 Errors as structured returns: tools that raise crash the FastMCP tool call,
 losing the actionable hint. We catch known failure modes (invalid voice,
@@ -101,8 +101,8 @@ class LocalBackend(Backend):
         play: bool = False,
     ) -> dict:
         """Synthesize ``text`` to a WAV. See SPEC §1.1 for response shape."""
-        # Voice validation — reject anything that isn't MALE. The SPEC mandates
-        # tightening over the s144 silent-downgrade.
+        # Voice validation — reject anything that isn't MALE. tiny-tts itself
+        # would silently downgrade, which masks misconfig; we tighten here.
         normalized_voice = (voice or "").upper()
         if normalized_voice != _VOICE_MALE:
             return _err(
@@ -112,8 +112,8 @@ class LocalBackend(Backend):
                 requested_voice=voice,
             )
 
-        # Bound the speed range like the s144 pydantic model. tiny-tts itself
-        # accepts any positive float but extreme values produce garbage.
+        # Bound the speed range. tiny-tts itself accepts any positive float
+        # but extreme values produce garbage.
         if not (0.5 <= speed <= 2.0):
             return _err(
                 f"speed {speed} out of range [0.5, 2.0]",
@@ -158,13 +158,9 @@ class LocalBackend(Backend):
         played = False
         if play:
             try:
-                # Wave 1C ships ``audio.playback.play``; gracefully handle the
-                # NotImplementedError until then.
                 from aawazz_mcp.audio.playback import play as _play
 
                 played = bool(_play(meta["audio_path"]))
-            except NotImplementedError:
-                log.debug("playback not implemented (Wave 1C); play=False")
             except Exception as e:  # noqa: BLE001 — never crash speak() over playback
                 log.warning("playback failed: %s", e)
 
@@ -190,7 +186,7 @@ class LocalBackend(Backend):
     ) -> dict:
         """Transcribe a local WAV (or http(s) URL). See SPEC §1.2."""
         # Validate model_arch up front so the caller gets a clean error before
-        # we hit a model load. Lifts ``_arch_from_string`` from the s144 server.
+        # we hit a model load.
         try:
             _arch_from_string(model_arch)
         except ValueError as e:
@@ -201,8 +197,7 @@ class LocalBackend(Backend):
                 "small_streaming, medium_streaming",
             )
 
-        # http(s) URL → download to tempfile, transcribe, unlink. Mirrors
-        # joker-mcp's modalities.rs behavior.
+        # http(s) URL → download to tempfile, transcribe, unlink.
         downloaded_tmp: Path | None = None
         if audio_path.startswith(("http://", "https://")):
             try:
@@ -324,23 +319,14 @@ class LocalBackend(Backend):
 
         capture_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Wave 1C provides the actual capture. Until 1C lands the call raises
-        # NotImplementedError — surface as a structured error so the tool
-        # response stays clean.
+        # Capture mic audio via the audio module. Surface any failure as a
+        # structured error so the tool response stays clean.
         try:
             from aawazz_mcp.audio.capture import record_to_wav
 
             await record_to_wav(
                 duration_s=duration_s,
                 output_path=str(capture_path),
-            )
-        except NotImplementedError:
-            if not save_audio:
-                capture_path.unlink(missing_ok=True)
-            return _err(
-                "mic capture not yet implemented (Wave 1C)",
-                hint="run with --remote or wait for Wave 1C to ship audio.capture.record_to_wav",
-                requested_duration_s=duration_s,
             )
         except Exception as e:  # noqa: BLE001
             log.exception("record_to_wav failed")

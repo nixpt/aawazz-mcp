@@ -23,7 +23,7 @@ def test_speak_then_transcribe_roundtrip(
     """Synthesize 'Hello aawazz', transcribe the WAV, expect 'hello' in output.
 
     Uses the loaders directly (skips :class:`LocalBackend`) to keep the smoke
-    independent of dispatcher / config wiring (which are Wave 1B).
+    independent of dispatcher / config wiring.
     """
     # Defer import so pytest collection doesn't pull torch in for unrelated
     # test sessions.
@@ -65,8 +65,8 @@ def test_speak_then_transcribe_roundtrip(
 def test_local_backend_speak_validates_voice(tmp_aawazz_home: Path) -> None:
     """LocalBackend should reject non-MALE voices with a structured error."""
     # Construct a minimal config substitute. We only touch fields LocalBackend
-    # uses for ``speak`` — output_dir + default lang/arch — so importing
-    # AawazzConfig would force Wave 1B's NotImplementedError trail.
+    # uses for ``speak`` — output_dir + default lang/arch — so we sidestep the
+    # AawazzConfig URL-resolution path that this test doesn't exercise.
     from aawazz_mcp.backends.local import LocalBackend
 
     class _FakeCfg:

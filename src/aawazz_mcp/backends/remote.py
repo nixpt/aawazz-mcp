@@ -1,7 +1,6 @@
 """Remote backend — httpx async client to existing aawazz-mouth/ears FastAPI services.
 
-Wire format mirrors the existing Rust arm in
-``joker-mcp::modalities`` (TTS @ ~lines 625-705, STT @ ~lines 361-440)::
+Wire format::
 
     POST {AAWAZZ_MOUTH_URL or http://127.0.0.1:7861}/tts
         body: {"text": str, "voice": str, "speed": float}
@@ -24,10 +23,11 @@ unreachable / 5xx / returns malformed JSON, return a structured error::
     }
 
 Timeouts: ``httpx.AsyncClient(timeout=httpx.Timeout(connect=2.0, read=120.0))`` —
-short connect = fast fail, long read = matches the s144 server's worst case.
+short connect = fast fail, long read = generous enough for cold model warm on
+the FastAPI side.
 
 The client is lazy-instantiated on first call so importing the module is free
-(Wave 2's ``voices_list`` may construct a Dispatcher without ever calling speak).
+(Dispatcher may construct a RemoteBackend without ever calling speak).
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ class RemoteBackend(Backend):
         voice: str = "MALE",
         speed: float = 1.0,
         output_path: str | None = None,  # noqa: ARG002 — remote ignores: server picks the path
-        play: bool = False,  # noqa: ARG002 — remote ignores: playback is local-only (Wave 2 layer)
+        play: bool = False,  # noqa: ARG002 — remote ignores: playback is local-only
     ) -> dict:
         if self.mouth_url is None:
             return _mouth_error("<unset>", "AAWAZZ_MOUTH_URL not configured")
@@ -157,8 +157,8 @@ class RemoteBackend(Backend):
                 "raw_body": resp.text[:400],
             }
 
-        # Normalise the response into the v1.0 SPEC shape. The s144 server already
-        # returns text_hash, but compute defensively from the input if absent.
+        # Normalise the response into the v1.0 SPEC shape. The FastAPI server
+        # typically returns text_hash; compute defensively from the input if absent.
         return {
             "audio_path": parsed.get("audio_path"),
             "duration_s": parsed.get("duration_s"),
@@ -167,7 +167,7 @@ class RemoteBackend(Backend):
             "voice": parsed.get("voice", voice),
             "speed": parsed.get("speed", float(speed)),
             "text_hash": parsed.get("text_hash") or _sha8(text),
-            "played": False,  # remote can't play on the MCP host; Wave 2's tool layer may post-play.
+            "played": False,  # remote can't play on the MCP host; the tool layer may post-play.
             "backend": "remote",
         }
 

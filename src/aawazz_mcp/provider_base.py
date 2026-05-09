@@ -42,7 +42,15 @@ class ProviderError(Exception):
     structured ``{error, hint, ...}`` responses instead of crashing the tool
     call. Providers should still raise plain exceptions for programmer errors
     (passing wrong types, etc.) — only wrap user-facing failures here.
+
+    The optional ``hint`` is surfaced separately by the dispatcher as the
+    response's ``hint`` field, so callers don't have to parse it out of the
+    primary message.
     """
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
 
 
 # ── TTS ─────────────────────────────────────────────────────────────────────

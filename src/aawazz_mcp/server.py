@@ -69,6 +69,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         language: str = "en",
         tts_provider: str | None = None,
         post_process: list[str] | None = None,
+        playback_provider: str | None = None,
     ) -> dict:
         """Synthesize speech from text.
 
@@ -106,6 +107,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             language=language,
             tts_provider=tts_provider,
             post_process=post_process,
+            playback_provider=playback_provider,
         )
 
     @mcp.tool()
@@ -153,6 +155,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         save_audio: bool = False,
         stt_provider: str | None = None,
         pre_process: list[str] | None = None,
+        capture_provider: str | None = None,
     ) -> dict:
         """Capture `duration_s` of microphone audio and transcribe.
 
@@ -180,6 +183,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             save_audio=save_audio,
             stt_provider=stt_provider,
             pre_process=pre_process,
+            capture_provider=capture_provider,
         )
 
     @mcp.tool()

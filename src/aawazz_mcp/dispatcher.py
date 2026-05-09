@@ -96,17 +96,14 @@ class Dispatcher:
     async def voices_list(self) -> dict:
         """Pure metadata; no model load. v1.3 response shape:
 
-        - ``providers.{tts,stt,post_processors}`` — each provider's
-          capabilities scraped from the registry.
-        - ``routing.{tts,stt}`` — the resolved routing chain. Phase 1 emits
-          the hardcoded chain (en→tiny-tts, ne→whisper, default→gtts/moonshine);
-          phase 2 will read the configurable chain.
+        - ``providers.{tts,stt,post_processors,capture,playback}`` — each
+          provider's capabilities scraped from the registry.
+        - ``routing.{tts,stt}`` — live routing chain from cfg.routing.
         - ``capabilities`` — listen/play probes + backend mode (back-compat).
         - ``tts``, ``stt`` — flattened v1 alias views for callers still on the
           v1.0 / v1.2 response shape. Will be removed in v2.0.
         """
-        from aawazz_mcp.audio.capture import has_input_device  # noqa: PLC0415
-        from aawazz_mcp.audio.playback import has_player  # noqa: PLC0415
+        from aawazz_mcp import post_processors  # noqa: F401, PLC0415  - register
         from aawazz_mcp import providers  # noqa: F401, PLC0415  - register builtins
         from aawazz_mcp import registry as _registry  # noqa: PLC0415
 
@@ -157,6 +154,22 @@ class Dispatcher:
                 "direction": p.direction,
             })
 
+        capture_providers = []
+        for p in _registry.list_capture():
+            capture_providers.append({
+                "name": p.name,
+                "version": getattr(p, "version", "unknown"),
+                "has_input_device": bool(p.has_input_device()),
+            })
+
+        playback_providers = []
+        for p in _registry.list_playback():
+            playback_providers.append({
+                "name": p.name,
+                "version": getattr(p, "version", "unknown"),
+                "has_player": bool(p.has_player()),
+            })
+
         # ── Live routing chain from cfg ─────────────────────────────────────
         routing = {
             "tts": {k: list(v) for k, v in self.cfg.routing.tts.items()},
@@ -185,16 +198,23 @@ class Dispatcher:
                     if arch not in merged:
                         merged.append(arch)
 
+        # v1 capability probes — read from the registered defaults so
+        # they stay accurate when capture/playback are swapped via plugin.
+        listen_ok = any(c["has_input_device"] for c in capture_providers)
+        play_ok = any(p["has_player"] for p in playback_providers)
+
         return {
             "providers": {
                 "tts": tts_providers,
                 "stt": stt_providers,
                 "post_processors": post_processors,
+                "capture": capture_providers,
+                "playback": playback_providers,
             },
             "routing": routing,
             "capabilities": {
-                "listen": bool(has_input_device()),
-                "play": bool(has_player()),
+                "listen": listen_ok,
+                "play": play_ok,
                 "backend_mode": self.cfg.mode,
                 "remote_url": {
                     "mouth": self.cfg.remote_mouth_url,

@@ -19,6 +19,8 @@ from aawazz_mcp.providers import gtts_provider  # noqa: F401
 from aawazz_mcp.providers import kokoro  # noqa: F401
 from aawazz_mcp.providers import moonshine  # noqa: F401
 from aawazz_mcp.providers import piper  # noqa: F401
+from aawazz_mcp.providers import shell_playback  # noqa: F401
+from aawazz_mcp.providers import sounddevice_capture  # noqa: F401
 from aawazz_mcp.providers import tiny_tts  # noqa: F401
 from aawazz_mcp.providers import whisper  # noqa: F401
 from aawazz_mcp.providers import xtts  # noqa: F401

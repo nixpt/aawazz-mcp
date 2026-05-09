@@ -38,6 +38,7 @@ from aawazz_mcp.backends.base import Backend
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.models.stt_loader import _arch_from_string
 from aawazz_mcp.provider_base import (
+    CaptureRequest,
     ProviderError,
     SttRequest,
     TtsRequest,
@@ -172,6 +173,7 @@ class LocalBackend(Backend):
         language: str = "en",
         tts_provider: str | None = None,
         post_process: list[str] | None = None,
+        playback_provider: str | None = None,
     ) -> dict:
         """Synthesize ``text`` via the routing chain. See SPEC §3 for routing
         semantics; SPEC §1.1 for the response shape.
@@ -301,10 +303,14 @@ class LocalBackend(Backend):
 
         played = False
         if play:
+            pb_name = playback_provider or "shell"
             try:
-                from aawazz_mcp.audio.playback import play as _play
-
-                played = bool(_play(audio_path))
+                player = _registry.get_playback(pb_name)
+                played = bool(await player.play(audio_path))
+            except KeyError:
+                log.warning(
+                    "playback provider %r not registered; skipping play", pb_name
+                )
             except Exception as e:  # noqa: BLE001 — never crash speak() over playback
                 log.warning("playback failed: %s", e)
 
@@ -512,6 +518,7 @@ class LocalBackend(Backend):
         save_audio: bool = False,
         stt_provider: str | None = None,
         pre_process: list[str] | None = None,
+        capture_provider: str | None = None,
     ) -> dict:
         """Capture mic, transcribe via the routing chain. See SPEC §1.3.
 
@@ -568,24 +575,42 @@ class LocalBackend(Backend):
 
         capture_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Capture mic audio via the audio module. Use the hard-timeout variant
-        # so a wedged sd.wait() (mic enumerates but produces no samples — OS
-        # mute, UEFI mute, routing) returns a structured error in
-        # duration_s + 5s rather than hanging the MCP runtime indefinitely.
-        # Same helper backs aawazz-dictate; one fix surface for both legs.
-        import asyncio as _asyncio
+        # Resolve the capture provider (default: sounddevice). The
+        # ``record()`` contract: hard-timeout subprocess isolation, raises
+        # ProviderError with hint on mic-mute / sandbox / no-device.
+        cap_name = capture_provider or "sounddevice"
+        try:
+            capturer = _registry.get_capture(cap_name)
+        except KeyError:
+            if not save_audio:
+                capture_path.unlink(missing_ok=True)
+            return _err(
+                f"capture provider {cap_name!r} not registered",
+                requested_capture_provider=cap_name,
+            )
 
         try:
-            from aawazz_mcp.audio.capture import record_to_wav_hard_timeout
-
-            capture = await _asyncio.to_thread(
-                record_to_wav_hard_timeout,
-                duration_s,
-                str(capture_path),
-                duration_s + 5.0,
+            await capturer.record(
+                CaptureRequest(
+                    duration_s=duration_s,
+                    sample_rate=16000,
+                    save_path=str(capture_path),
+                )
+            )
+        except ProviderError as e:
+            if not save_audio:
+                capture_path.unlink(missing_ok=True)
+            return _err(
+                str(e),
+                hint=e.hint or (
+                    "check that a default input device exists; "
+                    "voices_list().capabilities.listen reports availability"
+                ),
+                requested_duration_s=duration_s,
+                requested_audio_path=str(capture_path),
             )
         except Exception as e:  # noqa: BLE001
-            log.exception("record_to_wav_hard_timeout failed")
+            log.exception("capture provider %r failed", cap_name)
             if not save_audio:
                 capture_path.unlink(missing_ok=True)
             return _err(
@@ -593,19 +618,6 @@ class LocalBackend(Backend):
                 hint="check that a default input device exists; "
                 "voices_list().capabilities.listen reports availability",
                 requested_duration_s=duration_s,
-            )
-        if capture.get("error") or capture.get("audio_path") is None:
-            if not save_audio:
-                capture_path.unlink(missing_ok=True)
-            return _err(
-                f"mic capture failed: {capture.get('error', 'no audio path returned')}",
-                hint=capture.get(
-                    "hint",
-                    "check that a default input device exists; "
-                    "voices_list().capabilities.listen reports availability",
-                ),
-                requested_duration_s=duration_s,
-                requested_audio_path=str(capture_path),
             )
 
         # Phase-5 pre_process pipeline. Mutates the capture file in place;

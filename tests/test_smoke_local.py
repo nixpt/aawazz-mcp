@@ -1,6 +1,6 @@
 """Round-trip smoke for the local backend.
 
-speak("Hello aawazz") → transcribe(wav) → assert "hello" in lower(text).
+speak("Hello world") → transcribe(wav) → assert "hello" in lower(text).
 
 Marked ``slow`` because tiny-tts + Moonshine cold-load is ~3-8s on CPU. Run::
 
@@ -20,7 +20,7 @@ import pytest
 def test_speak_then_transcribe_roundtrip(
     tmp_aawazz_home: Path, tmp_path: Path
 ) -> None:
-    """Synthesize 'Hello aawazz', transcribe the WAV, expect 'hello' in output.
+    """Synthesize 'Hello world', transcribe the WAV, expect 'hello' in output.
 
     Uses the loaders directly (skips :class:`LocalBackend`) to keep the smoke
     independent of dispatcher / config wiring.
@@ -39,7 +39,7 @@ def test_speak_then_transcribe_roundtrip(
         with stdout_to_stderr():
             pass
         meta = await tts.synthesize(
-            text="Hello aawazz",
+            text="Hello world",
             output_path=str(out_wav),
             voice="MALE",
             speed=1.0,

@@ -130,15 +130,18 @@ The optional `env:` table on each block enables [hybrid mode](#hybrid-mode-advan
 | **Config file** | `~/.codex/config.toml` |
 | **Restart** | None — Codex auto-detects on the next `codex` invocation |
 | **Example** | [`examples/clients/codex.toml`](examples/clients/codex.toml) |
+| **Sandbox** | bwrap (audio-blocking) — the example defaults to **hybrid mode**; see [Sandboxed runners](#sandboxed-runners) |
 
 ```toml
 [mcp_servers.aawazz]
 command = "aawazz-mcp"
 args = []
 
-# [mcp_servers.aawazz.env]
-# AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
-# AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"
+# Default-on for sandboxed Codex — routes through host FastAPI so audio
+# actually plays. Comment out if Codex is running outside its sandbox.
+[mcp_servers.aawazz.env]
+AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
+AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"
 ```
 
 **Gotchas**
@@ -326,6 +329,32 @@ In an MCP-runtime config, drop the env table into the server entry — see the c
 ```
 
 Silent fallback would mask misconfig; you explicitly opted into remote. v1.1 may add `--remote-fallback=local` if there's demand.
+
+---
+
+## Sandboxed runners
+
+Some MCP-aware runtimes execute their server subprocesses inside a sandbox (bwrap, container, app sandbox) that blocks access to host audio devices. The classic symptoms:
+
+- `voices_list().capabilities.play == true` — the `paplay` / `aplay` binary IS on PATH.
+- but `speak(play=true).played == false` — the actual PortAudio / ALSA call is denied.
+- `listen()` returns immediately with empty text — mic enumeration sees no device.
+
+This is the **expected** behavior. aawazz-mcp surfaces the sandbox boundary cleanly rather than silently dropping audio; the sandbox is doing its job.
+
+**Fix: route through host-side FastAPI mouth/ears.** Set the env vars on the MCP server block so the sandboxed agent makes HTTP calls to `localhost:7861` / `:7862` instead of trying to talk to the host audio device directly. The audio actually plays on the host (where the sandbox boundary doesn't apply); the sandboxed agent just makes network calls. See [Hybrid mode](#hybrid-mode-advanced) for the protocol.
+
+Known-sandboxed runtimes that need this:
+
+| Runner | Sandbox class | Recommendation |
+|---|---|---|
+| **Codex** (OpenAI Codex CLI) | bwrap | Hybrid mode by default — see [`examples/clients/codex.toml`](examples/clients/codex.toml) |
+| **Gemini CLI** | folder-trust + path allowlist | Hybrid mode — even with `--skip-trust` + `--include-directories`, audio devices are unreliable. See [`examples/clients/gemini_cli.json`](examples/clients/gemini_cli.json) |
+| **Opencode** | rejects `external_directory` paths | Hybrid mode if it loads aawazz-mcp at all (per-project `permission` rules may also be required) |
+| **Claude Desktop** (macOS) | App sandbox | Hybrid mode if `listen` returns empty |
+| Most others (Claude Code CLI, Cursor, Zed, Cline, Continue, Goose) | None | Bundled mode works — hybrid optional for resource savings |
+
+**Concurrency caveat (s147):** if multiple sandboxed agents call `listen()` simultaneously, they race for the host's single mic. The current `aawazz-ears` FastAPI server on `:7862` does not serialize requests across clients — first to arrive wins, others get garbage. Plan dispatch so only one agent "has the mic" at a time, or wait for v1.4-class server-side serialization.
 
 ---
 

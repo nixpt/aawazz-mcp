@@ -1,8 +1,13 @@
 {
+  "_comment": "Gemini CLI sandboxes MCP server subprocesses with folder-trust + path-allowlist controls. Even after `--skip-trust` and `--include-directories`, host audio access is unreliable — same trap as Codex (bwrap-class). The env block below routes TTS+STT through host-side aawazz-mouth (:7861) and aawazz-ears (:7862) FastAPI services running outside the sandbox. Drop the env block if Gemini CLI is running without a sandbox.",
   "mcpServers": {
     "aawazz": {
       "command": "aawazz-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "AAWAZZ_MOUTH_URL": "http://127.0.0.1:7861/tts",
+        "AAWAZZ_EARS_URL": "http://127.0.0.1:7862/transcribe"
+      }
     }
   }
 }

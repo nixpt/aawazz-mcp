@@ -1,15 +1,26 @@
 # ~/.codex/config.toml — OpenAI Codex CLI MCP server config.
 #
 # Codex auto-detects this file on the next `codex` invocation; no restart needed.
+#
+# IMPORTANT: Codex CLI runs MCP server subprocesses inside a bwrap sandbox
+# that blocks host audio devices. Even though `paplay` is on PATH (so
+# `voices_list().capabilities.play` reports true), `speak(play=true)` will
+# fail with `played=false` and `listen()` returns an empty transcript —
+# the sandbox boundary, not a bug.
+#
+# This config defaults to hybrid mode so the sandboxed agent makes HTTP
+# calls to host-side `aawazz-mouth` (:7861) and `aawazz-ears` (:7862),
+# which run OUTSIDE the sandbox and have real audio access. Comment out
+# the env table below if you're running Codex without its sandbox.
+#
+# Concurrency caveat: if multiple sandboxed agents call `listen()`
+# simultaneously, they race for captain's single mic. v1.4 candidate is
+# server-side serialization at the FastAPI layer.
 
 [mcp_servers.aawazz]
 command = "aawazz-mcp"
 args = []
 
-# Optional: hybrid mode — delegate to captain's existing FastAPI services
-# (aawazz-mouth on :7861, aawazz-ears on :7862). `listen` always runs locally.
-# Uncomment the env table below to enable.
-#
-# [mcp_servers.aawazz.env]
-# AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
-# AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"
+[mcp_servers.aawazz.env]
+AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
+AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"

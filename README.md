@@ -6,7 +6,7 @@
 
 > **आवाज़** — Hindi/Urdu/Nepali for *voice / sound*.
 
-A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks the Model Context Protocol — Claude Code, Claude Desktop, Codex, Cursor, Zed, Cline, Continue, Goose, Gemini CLI. One `pip install` and four tools (`speak`, `transcribe`, `listen`, `voices_list`) light up across every runtime simultaneously. Bundles [tiny-tts](https://github.com/backtracking/tiny-tts) (~3.4 MB ONNX) and [Useful Sensors / Moonshine](https://github.com/usefulsensors/moonshine) (~80 MB ONNX) so it runs offline once weights are cached. **v1.3 adds a pluggable backend layer** so you can swap in [Piper](https://github.com/rhasspy/piper), [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), [Coqui XTTS-v2](https://huggingface.co/coqui/XTTS-v2), and post-processors (DSP profiles, VAD, gain) without forking. An optional `--remote` mode delegates to a separately-running FastAPI mouth/ears so model load doesn't double up on machines that already have those services.
+A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks the Model Context Protocol — Claude Code, Claude Desktop, Codex, Cursor, Zed, Cline, Continue, Goose, Gemini CLI. One `pip install` and **five MCP tools** (`speak`, `transcribe`, `listen`, `voices_list`, `respond`) plus two console scripts (`aawazz-dictate`, `aawazz-converse`) light up across every runtime simultaneously. Bundles [tiny-tts](https://github.com/backtracking/tiny-tts) (~3.4 MB ONNX) and [Useful Sensors / Moonshine](https://github.com/usefulsensors/moonshine) (~80 MB ONNX) so it runs offline once weights are cached. **v1.3 added a pluggable backend layer** for [Piper](https://github.com/rhasspy/piper), [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), [Coqui XTTS-v2](https://huggingface.co/coqui/XTTS-v2), and post-processors. **v1.4 adds an LLM bridge** — point at your local pipefish / Ollama / llama.cpp via the `respond` MCP tool, or run hands-free conversations via `aawazz-converse`. An optional `--remote` mode delegates to a separately-running FastAPI mouth/ears so model load doesn't double up.
 
 ---
 
@@ -14,7 +14,7 @@ A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks
 
 | | |
 |---|---|
-| **Version** | v1.3 (pluggable backends; default routing matches v1.2) |
+| **Version** | v1.4 (LLM bridge + streaming + lang_mismatch + aawazz-converse; v1.3 pluggable backends carry forward) |
 | **OS** | Linux, macOS — Moonshine ships only `.so` and `.dylib` |
 | **Python** | 3.10–3.14 |
 | **Distribution** | `pip install git+...` (PyPI release queued) |
@@ -514,9 +514,74 @@ Each extra is independent — install only what you need. `voices_list()` reflec
 
 ---
 
+## LLM bridge & conversational mode (v1.4)
+
+v1.4 adds a single `LlmProvider` (`pipefish`) plus the **`respond` MCP tool** that fuses LLM → TTS → playback. The captain's existing pipefish server (per the [seahorse](https://github.com/captain/seahorse) directive: *"any new local LLM backend goes THROUGH seahorse, not parallel to it"*) handles all backend dispatch — Ollama, llama.cpp, Gemini, Ravan/rama-zpu, LlamaCpp HTTP, and the in-flight TransformersBackend. aawazz speaks Ollama-compat HTTP (`/api/tags`, `/api/chat`); pipefish does the rest.
+
+### `respond(prompt, system_prompt=None, llm_provider=None, ...)`
+
+Generate text via the routed LLM, then synthesize and optionally play. One round-trip, one tool call. Returns `{text, audio_path, llm_provider, llm_model, tts_provider, llm_latency_ms, tts_latency_ms, total_latency_ms, prompt_tokens, completion_tokens, language_detected, language_mismatch, ...}`.
+
+Three high-leverage parameters:
+
+- **`system_prompt`** — load-bearing for adapter-flavoured models. Without one, bodhi-style LoRA adapters revert to their base identity (Bonsai, sometimes in Russian).
+- **`stream`** — pipes LLM tokens through the sentence chunker into `synthesize_stream` so audio plays during LLM generation, not after. tiny-tts streaming ships in v1.4.0; Piper / Kokoro streaming is filed for follow-up.
+- **`lang_mismatch`** — `route` (default) detects the LLM output language and re-resolves TTS for it. The s148 case (LLM emits Russian, request was English, tiny-tts is en-only) auto-swaps to gtts → captain hears actual Russian instead of Cyrillic synth artifacts. Other policies: `warn` (synthesize anyway, tag the response), `error` (hard-fail), `off` (skip).
+
+### `aawazz-converse` console script
+
+Local-only conversational loop — `listen` (with `vad:webrtc` silence trim) → `respond` (multi-turn history, persona system prompt) → `play` → repeat. Squadron persona files load automatically:
+
+```bash
+aawazz-converse --persona foreman --llm-model Llama-3.2-1B-Instruct-Q4_K_M
+```
+
+Bare names (`foreman`, `architect`, `tester`) resolve under `projects/squadron/personas/<name>/persona.md`; pass an absolute path for any other markdown file. Exit phrases (default `exit`/`goodbye`/`stop listening`), max-turn cap, JSONL transcript save, VAD toggle — see `aawazz-converse --help`.
+
+For dry-runs without a mic, pass `--initial-prompt "..."` to bootstrap the conversation:
+
+```bash
+aawazz-converse --persona foreman \
+  --initial-prompt "Briefly: what's your role on the squad?" \
+  --llm-model Llama-3.2-1B-Instruct-Q4_K_M --max-turns 1
+```
+
+### Pipefish setup
+
+aawazz expects pipefish on `http://127.0.0.1:11450` by default. Override via:
+
+```bash
+export AAWAZZ_PIPEFISH_URL=http://other-host:11450
+export AAWAZZ_PIPEFISH_MODEL=qwen3              # or any model in /api/tags
+export AAWAZZ_PIPEFISH_TOKEN=...                # if pipefish requires auth
+```
+
+The provider does a 1 s reachability probe on first capability call and caches for 30 s. When pipefish is unreachable, `voices_list().providers.llm[0].available` is `false` and `respond` returns a clean error pointing at pipefish.
+
+### Routing the LLM stage
+
+```toml
+# ~/.config/aawazz/aawazz.toml
+[llm.routing]
+default = ["pipefish"]
+```
+
+Per-call override: `respond({"llm_provider": "..."})` — hard-fails if missing or unavailable. Per-language LLM routing is intentionally NOT a thing — LLMs are language-emergent; pick a model, not a (language → model) map.
+
+### v1.4 optional extras
+
+```bash
+pip install "aawazz-mcp[langdetect]"     # lingua-language-detector for lang_mismatch=route
+pip install "aawazz-mcp[chunking]"       # pysbd for robust multi-language sentence segmentation
+```
+
+httpx is already a core dep, so the `pipefish` LLM provider works out of the box — no extra needed.
+
+---
+
 ## Tools
 
-Four tools and one resource. Tool docstrings become MCP tool descriptions verbatim — what your agent sees in `tools/list` mirrors the contracts below.
+Five tools and one resource. Tool docstrings become MCP tool descriptions verbatim — what your agent sees in `tools/list` mirrors the contracts below.
 
 ### `speak(text, voice="MALE", speed=1.0, output_path=None, play=False, language="en", tts_provider=None, post_process=None, playback_provider=None)`
 
@@ -590,7 +655,19 @@ Cheap probe — does **not** load models. v1.3 response shape:
 }
 ```
 
-Use it to discover what providers / voices / post-processors are available, what the resolved routing chain is, and whether `listen` will work on the current host.
+Use it to discover what providers / voices / post-processors are available, what the resolved routing chain is, and whether `listen` will work on the current host. v1.4 adds `providers.llm[]` (with `available`, `supports_streaming`, `backend_models`, `endpoint`) and `routing.llm`.
+
+### `respond(prompt=None, messages=None, system_prompt=None, llm_provider=None, llm_model=None, tts_provider=None, language="en", voice="MALE", speed=1.0, play=False, stream=False, post_process=None, output_path=None, max_tokens=256, temperature=0.7, timeout_s=30.0, lang_mismatch="route")`
+
+Generate text via the routed LLM provider, then synthesize and optionally play. v1.4 phase 2 ships streaming via `stream=True`; v1.4 phase 3 ships `lang_mismatch` policies. See [LLM bridge & conversational mode](#llm-bridge--conversational-mode-v14) above for the full contract.
+
+Examples:
+
+```
+respond({"prompt": "What is the meaning of awareness?", "play": true})
+respond({"messages": [...], "system_prompt": "You are Foreman.", "stream": true, "play": true})
+respond({"prompt": "Кто ты?", "language": "ru", "lang_mismatch": "route"})
+```
 
 ### Resource: `aawazz://health`
 

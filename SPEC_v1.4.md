@@ -23,7 +23,7 @@ The s148 draft proposed building `OpenAICompatLlmProvider` (Ollama / llamacpp / 
 
 Pipefish (`libs/seahorse/apps/pipefish/rust-server/src/models.rs:20`) already implements the `ModelBackend` trait with five built-in adapters: `LocalBackend` (Seahorse C++ → llama.cpp FFI), `OllamaBackend`, `GeminiBackend`, `RavanBackend` (rama-zpu arena), `LlamaCppBackend`. Multi-turn chat works. **aawazz speaks to pipefish, not to backends.**
 
-The transformers / PEFT loading we proved out in s148 (bodhi adapter on Bonsai-1.7B base) **belongs as a sixth `TransformersBackend` inside pipefish**, not as a parallel provider in aawazz. That's a seahorse-side ticket; aawazz reaches it the same way it reaches every other backend — through pipefish's HTTP `/v1/chat/completions`.
+The transformers / PEFT loading we proved out in s148 (bodhi adapter on Bonsai-1.7B base) **belongs as a sixth `TransformersBackend` inside pipefish**, not as a parallel provider in aawazz. That's a seahorse-side ticket; aawazz reaches it the same way it reaches every other backend — through pipefish's HTTP `/api/chat`.
 
 ### Drivers from the s148 ship + bodhi experiment
 
@@ -91,7 +91,7 @@ class LlmCapabilities:
     requires_network: bool
     supports_streaming: bool
     supports_system_prompt: bool
-    backend_models: tuple[str, ...]    # discovered via /v1/models on the endpoint
+    backend_models: tuple[str, ...]    # discovered via /api/tags on the endpoint
     notes: str = ""
 
 
@@ -130,7 +130,7 @@ class LlmChunk:
 
 ## 3. Built-in: `PipefishLlmProvider`
 
-Single concrete provider in v1.4.0. HTTP client (`httpx.AsyncClient`) against `/v1/chat/completions`, SSE streaming.
+Single concrete provider in v1.4.0. HTTP client (`httpx.AsyncClient`) against pipefish's **Ollama-compatible** `/api/chat` endpoint (NOT OpenAI's `/v1/chat/completions` — pipefish doesn't expose `/v1/*`; the `/v1/*` paths in pipefish's own `models.rs` are pipefish CALLING upstream backends, not what it serves). Streaming via newline-delimited JSON.
 
 ```python
 @register_llm("pipefish")
@@ -145,7 +145,7 @@ class PipefishLlmProvider:
 
 ### Reachability semantics
 
-`capabilities()` does a one-shot `GET /v1/models` with a 1 s timeout at first call:
+`capabilities()` does a one-shot `GET /api/tags` (Ollama-compat list-models endpoint) with a 1 s timeout at first call:
 
 - **Success** → `available=True`, `backend_models=(...)` populated from response.
 - **ConnectionRefused / DNS / 5xx** → `available=False`, `backend_models=()`. The router skips us (so `respond` returns a clean error instead of silently hanging).
@@ -154,7 +154,7 @@ The probe result caches for 30 s; subsequent calls re-probe lazily. This keeps `
 
 ### Streaming
 
-`stream(request)` POSTs `/v1/chat/completions` with `"stream": true`, yields `LlmChunk` per SSE line. Whether the underlying backend can stream or not is pipefish's problem — its OpenAI-compat surface presents streaming uniformly. Captain's pipefish-multi-turn-chat surface (per s111 research, line 341) handles this already.
+`stream(request)` POSTs `/api/chat` with `"stream": true`, parses newline-delimited JSON frames, yields `LlmChunk` per non-final frame plus an `is_final=True` terminator. **Caveat (s148 finding):** pipefish's current `chat_completions` handler is fully batch — it returns one `done=true` frame regardless of `stream=true`. Aawazz's wire format works correctly; the streaming benefit lights up when pipefish gains real SSE per the sibling `seahorse — pipefish SSE streaming` ticket in `workspace-meta/FOREMAN_THREADS.md`.
 
 ---
 
@@ -384,7 +384,7 @@ Streaming primarily consumed by `respond` and `aawazz-converse`. Default `stream
 
 | Provider | Stage | Status | Optional extra | Notes |
 |----------|-------|--------|----------------|-------|
-| `pipefish` | LLM | new | `[llm]` | httpx-based OpenAI-compat client; 1 s reachability probe at first capability call |
+| `pipefish` | LLM | new | (httpx is core) | httpx-based Ollama-compat client (`/api/tags`, `/api/chat`); 1 s reachability probe at first capability call, 30 s cache |
 | (lingua) | lang-detect post-step | new | `[langdetect]` | short-text language detection |
 | (pysbd) | sentence segmentation | new | `[chunking]` | streaming chunk boundaries |
 
@@ -398,7 +398,7 @@ The s148 bodhi experiment proved out an in-process transformers + PEFT loading r
 
 1. **`TransformersBackend` adapter** — sixth implementation of the `ModelBackend` trait in `libs/seahorse/apps/pipefish/rust-server/src/models.rs` alongside Local / Ollama / Gemini / Ravan / LlamaCpp. Calls into a small Python sidecar via PyO3 or an out-of-process `transformers-server` (decision left to seahorse-side review).
 2. **Adapter config schema** — pipefish needs to know "for model X, base = `prism-ml/Bonsai-1.7B-unpacked`, adapter = `nixprabin/bodhi`, dtype = float16, device = cpu". TOML extension to pipefish's existing model registry.
-3. **Reachability discovery** — `/v1/models` should report transformers-loaded checkpoints alongside the existing backends.
+3. **Reachability discovery** — `/api/tags` should report transformers-loaded checkpoints alongside the existing backends.
 
 This is filed as a separate ticket in `workspace-meta/FOREMAN_THREADS.md` under the seahorse cluster. **aawazz v1.4 doesn't block on it** — pipefish's existing five backends already cover the bridge surface (the bodhi experiment can re-run via pipefish's `LlamaCppBackend` against a quantized Bonsai GGUF if/when one becomes available).
 
@@ -410,7 +410,7 @@ The s148 transformers + PEFT bridge code (`/tmp/bodhi-aawazz-bridge.py`) becomes
 
 | Test layer | Coverage |
 |------------|----------|
-| `tests/llm_providers/` | `PipefishLlmProvider` against an httpx mock; reachability cache; capability discovery via mocked `/v1/models` |
+| `tests/llm_providers/` | `PipefishLlmProvider` against an httpx mock; reachability cache; capability discovery via mocked `/api/tags` |
 | `tests/streaming/` | sentence-boundary chunker; `synthesize_stream` mock provider; first-audio-latency harness |
 | `tests/lang_detect/` | `lingua` round-trip on canonical phrases; `route` / `warn` / `error` policy paths |
 | `tests/integration/respond/` | end-to-end `respond` against a real running pipefish, gated by env (`AAWAZZ_TEST_PIPEFISH_URL`); skipped in CI by default |

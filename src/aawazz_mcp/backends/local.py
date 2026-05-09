@@ -43,10 +43,55 @@ from aawazz_mcp.provider_base import (
     TtsRequest,
 )
 from aawazz_mcp.routing import Router
+from aawazz_mcp import registry as _registry
 
-# Importing the providers package triggers built-in registration as a side
-# effect.
+# Importing the providers + post_processors packages triggers built-in
+# registration as a side effect.
+import aawazz_mcp.post_processors  # noqa: F401, PLC0415
 import aawazz_mcp.providers  # noqa: F401, PLC0415
+
+
+def _apply_audio_chain(
+    audio_path: str,
+    chain: list[str] | None,
+    direction: str,
+) -> None:
+    """Run a post-process / pre-process chain on the audio at ``audio_path``.
+
+    Each step is looked up in the registry by name. Direction is enforced:
+    a "tts" processor in a pre-process chain or vice versa raises
+    ProviderError. Reads + writes the file once (chain runs in memory).
+    """
+    if not chain:
+        return
+
+    import soundfile as sf  # noqa: PLC0415
+
+    audio, sr = sf.read(audio_path)
+    for name in chain:
+        try:
+            proc = _registry.get_post(name)
+        except KeyError as e:
+            msg = (
+                f"unknown post-processor {name!r}; registered: "
+                f"{sorted(p.name for p in _registry.list_post())}"
+            )
+            raise ProviderError(msg) from e
+        if proc.direction != direction and proc.direction != "both":
+            msg = (
+                f"post-processor {name!r} has direction={proc.direction!r}; "
+                f"can't run in a {direction!r} chain"
+            )
+            raise ProviderError(msg)
+        try:
+            audio = proc.process(audio, int(sr))
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            msg = f"post-processor {name!r} failed: {e}"
+            raise ProviderError(msg) from e
+
+    sf.write(audio_path, audio, int(sr), subtype="PCM_16")
 
 log = logging.getLogger("aawazz_mcp.backends.local")
 
@@ -126,6 +171,7 @@ class LocalBackend(Backend):
         play: bool = False,
         language: str = "en",
         tts_provider: str | None = None,
+        post_process: list[str] | None = None,
     ) -> dict:
         """Synthesize ``text`` via the routing chain. See SPEC §3 for routing
         semantics; SPEC §1.1 for the response shape.
@@ -133,6 +179,12 @@ class LocalBackend(Backend):
         ``tts_provider`` overrides the chain (hard-fail if unavailable);
         otherwise the per-language preference list from ``cfg.routing`` is
         consulted, then the ``default`` chain.
+
+        ``post_process`` is an ordered list of post-processor names from the
+        registry (e.g. ``["dsp:DEEP", "gain:auto"]``). Each step runs in turn
+        on the synthesized WAV. ``voice`` set to a DSP profile name
+        (``"DEEP"``/``"BRIGHT"``/...) auto-prepends the corresponding
+        ``dsp:<NAME>`` step for v1.2 back-compat.
         """
         normalized_voice = (voice or "").upper()
 
@@ -225,21 +277,27 @@ class LocalBackend(Backend):
         sample_rate = tts_result.sample_rate
         latency_ms = tts_result.latency_ms
 
-        # Apply DSP voice profile when caller requested one and provider
-        # accepts it. Phase 5 generalizes this to a post_process= pipeline.
+        # Phase-5 post-process pipeline. Legacy ``voice="DEEP"`` (and other
+        # DSP profile names) auto-prepends ``dsp:DEEP`` to the chain when the
+        # provider accepts DSP profiles. Caller's explicit chain still runs
+        # after the legacy step.
+        chain: list[str] = []
         if is_dsp_voice and provider.capabilities().accepts_dsp_profiles:
-            try:
-                import soundfile as sf
-                from aawazz_mcp.audio.dsp import apply_profile
+            chain.append(f"dsp:{normalized_voice}")
+        if post_process:
+            chain.extend(post_process)
 
-                audio, sr = sf.read(str(out))
-                processed = apply_profile(audio, int(sr), normalized_voice)
-                sf.write(str(out), processed, int(sr))
-                info = sf.info(str(out))
-                duration_s = float(info.duration)
-                sample_rate = int(info.samplerate)
-            except Exception:  # noqa: BLE001
-                log.exception("DSP profile %s failed", normalized_voice)
+        if chain:
+            try:
+                _apply_audio_chain(str(out), chain, direction="tts")
+            except ProviderError as e:
+                return _err(str(e), requested_post_process=chain)
+            # Re-read metadata since the chain may have changed length.
+            import soundfile as sf  # noqa: PLC0415
+
+            info = sf.info(str(out))
+            duration_s = float(info.duration)
+            sample_rate = int(info.samplerate)
 
         played = False
         if play:
@@ -264,6 +322,7 @@ class LocalBackend(Backend):
                 "played": played,
                 "backend": "local-gtts",
                 "provider": provider.name,
+                "post_process_chain": chain,
             }
         return {
             "audio_path": audio_path,
@@ -276,6 +335,7 @@ class LocalBackend(Backend):
             "played": played,
             "backend": "local",
             "provider": provider.name,
+            "post_process_chain": chain,
         }
 
     # -------------------------------------------------------------- transcribe
@@ -286,12 +346,20 @@ class LocalBackend(Backend):
         language: str = "en",
         model_arch: str = "tiny_streaming",
         stt_provider: str | None = None,
+        pre_process: list[str] | None = None,
     ) -> dict:
         """Transcribe a local WAV (or http(s) URL) via the routing chain.
 
         See SPEC §3 for routing semantics; SPEC §1.2 for response shape.
         ``stt_provider`` overrides the chain (hard-fail on missing or
         language-incompatible).
+
+        ``pre_process`` is an ordered list of post-processor names with
+        direction ``"stt"`` or ``"both"`` (e.g. ``["vad:webrtc"]`` to trim
+        leading/trailing silence, ``["gain:auto"]`` to peak-normalize).
+        Each step runs on the audio buffer before transcription. The
+        original audio file at ``audio_path`` is NOT modified — a tempfile
+        copy is processed and unlinked after.
         """
         # Resolve the STT provider via the routing chain.
         try:
@@ -332,6 +400,34 @@ class LocalBackend(Backend):
         else:
             local_path = audio_path
 
+        # Phase-5 pre_process pipeline. Run on a tempfile copy so the
+        # caller's original audio file is never mutated.
+        preprocessed_tmp: Path | None = None
+        if pre_process:
+            import shutil  # noqa: PLC0415
+            import tempfile as _tempfile  # noqa: PLC0415
+
+            tmp = _tempfile.NamedTemporaryFile(
+                prefix="aawazz-pre-", suffix=".wav", delete=False
+            )
+            tmp.close()
+            preprocessed_tmp = Path(tmp.name)
+            shutil.copy(local_path, preprocessed_tmp)
+            try:
+                _apply_audio_chain(
+                    str(preprocessed_tmp), pre_process, direction="stt"
+                )
+                local_path = str(preprocessed_tmp)
+            except ProviderError as e:
+                preprocessed_tmp.unlink(missing_ok=True)
+                if downloaded_tmp is not None:
+                    downloaded_tmp.unlink(missing_ok=True)
+                return _err(
+                    str(e),
+                    requested_audio_path=audio_path,
+                    requested_pre_process=pre_process,
+                )
+
         # Whisper has no caller-facing arch; pass None so the provider
         # uses its registered model.
         req_arch: str | None = (
@@ -364,6 +460,14 @@ class LocalBackend(Backend):
                     downloaded_tmp.unlink(missing_ok=True)
                 except OSError:
                     log.warning("could not unlink temp %s", downloaded_tmp)
+            if preprocessed_tmp is not None:
+                try:
+                    preprocessed_tmp.unlink(missing_ok=True)
+                except OSError:
+                    log.warning(
+                        "could not unlink pre-processed temp %s",
+                        preprocessed_tmp,
+                    )
 
         return {
             "text": stt_result.text,
@@ -375,6 +479,7 @@ class LocalBackend(Backend):
             "audio_path": audio_path,  # echo the caller's input (URL or path)
             "backend": "local",
             "provider": provider.name,
+            "pre_process_chain": list(pre_process) if pre_process else [],
         }
 
     async def _download_audio_to_temp(self, url: str) -> Path:
@@ -406,12 +511,16 @@ class LocalBackend(Backend):
         model_arch: str = "tiny_streaming",
         save_audio: bool = False,
         stt_provider: str | None = None,
+        pre_process: list[str] | None = None,
     ) -> dict:
         """Capture mic, transcribe via the routing chain. See SPEC §1.3.
 
         Always local — remote-mode mic-tunneling is out of scope; the
         dispatcher routes ``listen`` straight here regardless of cfg.mode.
-        ``stt_provider`` overrides the chain.
+        ``stt_provider`` overrides the chain. ``pre_process`` runs on the
+        captured audio before STT (e.g. ``["vad:webrtc"]`` to trim
+        leading/trailing silence). When ``save_audio=True`` the saved file
+        reflects the pre-processed audio, not the raw capture.
         """
         # Hard cap matches SPEC §1.3.
         if not (0.5 <= duration_s <= 30.0):
@@ -499,6 +608,23 @@ class LocalBackend(Backend):
                 requested_audio_path=str(capture_path),
             )
 
+        # Phase-5 pre_process pipeline. Mutates the capture file in place;
+        # if save_audio=True the saved WAV reflects the post-pre-process
+        # state (cleaner output for downstream consumers).
+        if pre_process:
+            try:
+                _apply_audio_chain(
+                    str(capture_path), pre_process, direction="stt"
+                )
+            except ProviderError as e:
+                if not save_audio:
+                    capture_path.unlink(missing_ok=True)
+                return _err(
+                    str(e),
+                    requested_audio_path=str(capture_path),
+                    requested_pre_process=pre_process,
+                )
+
         req_arch: str | None = (
             None if provider.name == "whisper" else model_arch
         )
@@ -533,6 +659,7 @@ class LocalBackend(Backend):
             "audio_path": str(capture_path) if save_audio else None,
             "backend": "local",
             "provider": provider.name,
+            "pre_process_chain": list(pre_process) if pre_process else [],
         }
 
         if not save_audio:

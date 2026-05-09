@@ -68,6 +68,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         play: bool = False,
         language: str = "en",
         tts_provider: str | None = None,
+        post_process: list[str] | None = None,
     ) -> dict:
         """Synthesize speech from text.
 
@@ -86,10 +87,15 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
                 if the provider is missing or doesn't support the language.
                 Use ``voices_list().providers.tts[*].name`` to see what's
                 registered. Default ``None`` follows ``cfg.routing.tts``.
+            post_process: Ordered list of TTS-direction post-processor names
+                applied to the synthesized WAV (e.g. ``["dsp:DEEP", "gain:auto"]``).
+                See ``voices_list().providers.post_processors`` for what's
+                available. Legacy DSP voice names (``"DEEP"``, ``"BRIGHT"``, …)
+                auto-prepend the matching ``dsp:<NAME>`` step.
 
         Returns:
             ``{audio_path, duration_s, sample_rate, latency_ms, voice, speed,
-            text_hash, played, backend, provider}``.
+            text_hash, played, backend, provider, post_process_chain}``.
         """
         return await dispatcher.speak(
             text=text,
@@ -99,6 +105,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             play=play,
             language=language,
             tts_provider=tts_provider,
+            post_process=post_process,
         )
 
     @mcp.tool()
@@ -107,6 +114,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         language: str = "en",
         model_arch: str = "tiny_streaming",
         stt_provider: str | None = None,
+        pre_process: list[str] | None = None,
     ) -> dict:
         """Transcribe a WAV file (or http(s) URL).
 
@@ -120,16 +128,21 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
                 Ignored when the resolved provider isn't Moonshine.
             stt_provider: Override the routing chain for this call. Hard-fails
                 if the provider is missing or doesn't support the language.
+            pre_process: Ordered list of STT-direction post-processor names
+                applied to the audio before transcription (e.g.
+                ``["vad:webrtc"]`` to trim silence, ``["gain:auto"]`` to
+                peak-normalize). The original ``audio_path`` is not modified.
 
         Returns:
             ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
-            language, audio_path, backend, provider}``.
+            language, audio_path, backend, provider, pre_process_chain}``.
         """
         return await dispatcher.transcribe(
             audio_path=audio_path,
             language=language,
             model_arch=model_arch,
             stt_provider=stt_provider,
+            pre_process=pre_process,
         )
 
     @mcp.tool()
@@ -139,6 +152,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         model_arch: str = "tiny_streaming",
         save_audio: bool = False,
         stt_provider: str | None = None,
+        pre_process: list[str] | None = None,
     ) -> dict:
         """Capture `duration_s` of microphone audio and transcribe.
 
@@ -165,6 +179,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             model_arch=model_arch,
             save_audio=save_audio,
             stt_provider=stt_provider,
+            pre_process=pre_process,
         )
 
     @mcp.tool()

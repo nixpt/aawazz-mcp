@@ -69,6 +69,12 @@ kokoro = [
 xtts = [
     "coqui-tts>=0.27,<0.28",
 ]
+# Optional: WebRTC VAD for silence-trim post-processor. ``webrtcvad-wheels``
+# is a re-packaging of webrtcvad with precompiled binary wheels (the original
+# webrtcvad needs a C compiler at install time and lacks py3.14 wheels).
+vad = [
+    "webrtcvad-wheels>=2.0.14",
+]
 
 [project.scripts]
 aawazz-mcp = "aawazz_mcp.cli:main"

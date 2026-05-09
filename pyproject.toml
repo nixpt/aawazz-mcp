@@ -56,6 +56,19 @@ multilingual = [
 piper = [
     "piper-tts>=1.4,<2.0",
 ]
+# Optional: Kokoro-82M ONNX TTS — pure-ONNX (no torch), 24 kHz output, 50+
+# voices spanning English, Japanese, Mandarin, Spanish, French, Hindi,
+# Italian, Portuguese. Model + voices.bin auto-download to
+# ~/.local/share/aawazz/kokoro/ on first use unless AAWAZZ_KOKORO_AUTO_DOWNLOAD=0.
+kokoro = [
+    "kokoro-onnx>=0.4,<1.0",
+]
+# Optional: Coqui XTTS-v2 — voice cloning, 17 languages, ~2 GB model. Pulls
+# torch (already required by [multilingual]). The TTS package autoloads the
+# model from HF on first use.
+xtts = [
+    "coqui-tts>=0.27,<0.28",
+]
 
 [project.scripts]
 aawazz-mcp = "aawazz_mcp.cli:main"

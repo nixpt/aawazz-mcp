@@ -319,17 +319,24 @@ class LocalBackend(Backend):
 
         capture_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Capture mic audio via the audio module. Surface any failure as a
-        # structured error so the tool response stays clean.
-        try:
-            from aawazz_mcp.audio.capture import record_to_wav
+        # Capture mic audio via the audio module. Use the hard-timeout variant
+        # so a wedged sd.wait() (mic enumerates but produces no samples — OS
+        # mute, UEFI mute, routing) returns a structured error in
+        # duration_s + 5s rather than hanging the MCP runtime indefinitely.
+        # Same helper backs aawazz-dictate; one fix surface for both legs.
+        import asyncio as _asyncio
 
-            capture = await record_to_wav(
-                duration_s=duration_s,
-                output_path=str(capture_path),
+        try:
+            from aawazz_mcp.audio.capture import record_to_wav_hard_timeout
+
+            capture = await _asyncio.to_thread(
+                record_to_wav_hard_timeout,
+                duration_s,
+                str(capture_path),
+                duration_s + 5.0,
             )
         except Exception as e:  # noqa: BLE001
-            log.exception("record_to_wav failed")
+            log.exception("record_to_wav_hard_timeout failed")
             if not save_audio:
                 capture_path.unlink(missing_ok=True)
             return _err(

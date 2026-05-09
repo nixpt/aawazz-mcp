@@ -139,6 +139,107 @@ async def record_to_wav(
     The recording itself is dispatched to a worker thread via
     ``asyncio.to_thread`` so the FastMCP event loop stays responsive during the
     blocking ``sounddevice.rec`` + ``sd.wait`` call.
+
+    NOTE: ``sd.wait()`` blocks forever when the device enumerates but produces
+    no samples (OS-mute, UEFI-mute, PulseAudio/PipeWire routing wrong source).
+    Callers that must avoid hangs should use :func:`record_to_wav_hard_timeout`
+    instead — same contract, but subprocess-isolated so the parent can hard-kill
+    a wedged capture.
     """
     clamped = clamp_duration(duration_s)
     return await asyncio.to_thread(_record_sync, clamped, output_path, sample_rate)
+
+
+def _capture_worker(
+    duration_s: float,
+    output_path: str,
+    queue: "Any",
+) -> None:
+    """Child-process mic capture entry point.
+
+    Runs the async :func:`record_to_wav` to completion via ``asyncio.run`` and
+    pushes the result onto ``queue``. The parent process can hard-kill this
+    worker (terminate / kill) when ``sd.wait`` wedges, which is impossible if
+    the recording runs in the parent's thread pool.
+    """
+    try:
+        result = asyncio.run(record_to_wav(duration_s=duration_s, output_path=output_path))
+    except Exception as exc:  # noqa: BLE001
+        result = {
+            "audio_path": None,
+            "error": f"mic capture failed: {exc}",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }
+    queue.put(result)
+
+
+def record_to_wav_hard_timeout(
+    duration_s: float,
+    output_path: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Subprocess-isolated :func:`record_to_wav` with a real hard timeout.
+
+    Spawns a child process via ``multiprocessing.get_context("spawn")``, joins
+    with ``timeout_s``, and ``terminate`` + ``kill`` the worker if it's still
+    alive. Returns the same payload shape as :func:`record_to_wav` plus two new
+    failure modes:
+
+    - ``error: "mic capture timed out (no samples arrived)"`` — wait elapsed,
+      worker was force-killed. Most often: mic enumerable but muted at OS /
+      UEFI / routing layer.
+    - ``error: "mic capture process exited with code N"`` — child died (segv,
+      OOM, sandbox kill).
+
+    Sync function. Async callers should wrap with ``asyncio.to_thread`` so the
+    event loop stays responsive during the join.
+
+    Used by both the agent-facing MCP ``listen`` tool and the operator-side
+    ``aawazz-dictate`` CLI. Plain :func:`record_to_wav` remains the primitive
+    for callers that explicitly opt out of subprocess isolation.
+    """
+    # Local import keeps multiprocessing out of the hot path for callers that
+    # only need the basic record_to_wav primitive.
+    import multiprocessing as mp
+
+    ctx = mp.get_context("spawn")
+    queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_capture_worker,
+        args=(duration_s, output_path, queue),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(timeout_s)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(2.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(2.0)
+        return {
+            "audio_path": None,
+            "error": "mic capture timed out (no samples arrived)",
+            "hint": (
+                f"device enumerated but produced no samples in {timeout_s:.1f}s. "
+                "Check: OS mute, UEFI mute, PulseAudio/PipeWire source routing, "
+                "container audio passthrough."
+            ),
+        }
+
+    if proc.exitcode not in (0, None):
+        return {
+            "audio_path": None,
+            "error": f"mic capture process exited with code {proc.exitcode}",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }
+
+    try:
+        return queue.get_nowait()
+    except Exception:
+        return {
+            "audio_path": None,
+            "error": "mic capture process returned no result",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }

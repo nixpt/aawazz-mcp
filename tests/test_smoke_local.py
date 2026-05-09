@@ -62,6 +62,48 @@ def test_speak_then_transcribe_roundtrip(
 
 
 @pytest.mark.slow
+def test_gtts_speak_writes_real_wav(tmp_aawazz_home: Path, tmp_path: Path) -> None:
+    """Non-English speak() must write a real RIFF WAV at the .wav path —
+    gTTS emits MP3 natively, so the backend transcodes to PCM WAV before
+    returning. Otherwise the round-trip into Moonshine STT explodes with
+    'Not a valid RIFF file'.
+
+    Requires network access to Google Translate TTS.
+    """
+    pytest.importorskip("gtts")
+
+    from aawazz_mcp.backends.local import LocalBackend
+
+    class _FakeCfg:
+        output_dir = tmp_aawazz_home / "mouth"
+        default_language = "en"
+        default_model_arch = "tiny_streaming"
+
+    backend = LocalBackend(_FakeCfg())  # type: ignore[arg-type]
+    out_wav = tmp_path / "es.wav"
+
+    async def _run() -> dict:
+        return await backend.speak(
+            text="Hola mundo.",
+            language="es",
+            output_path=str(out_wav),
+            play=False,
+        )
+
+    result = asyncio.run(_run())
+    assert "error" not in result, result
+    assert out_wav.exists()
+
+    # RIFF/WAVE magic — first 4 bytes "RIFF", bytes 8..12 "WAVE".
+    header = out_wav.read_bytes()[:12]
+    assert header[:4] == b"RIFF", f"expected RIFF magic, got {header[:4]!r}"
+    assert header[8:12] == b"WAVE", f"expected WAVE form, got {header[8:12]!r}"
+
+    # No leftover .mp3 sibling from the transcode step.
+    assert not out_wav.with_suffix(out_wav.suffix + ".mp3").exists()
+
+
+@pytest.mark.slow
 def test_local_backend_speak_validates_voice(tmp_aawazz_home: Path) -> None:
     """LocalBackend should reject unknown voices with a structured error
     listing all valid voice IDs (MALE + DSP profiles)."""

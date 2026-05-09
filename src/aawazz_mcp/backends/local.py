@@ -264,7 +264,11 @@ class LocalBackend(Backend):
             from gtts import gTTS
 
             tts = gTTS(text, lang=language)
-            tts.save(str(out))
+            # gTTS emits MP3; write to a .mp3 sibling, then transcode to PCM WAV
+            # so the file at ``out`` honors its .wav extension and downstream
+            # WAV-only consumers (Moonshine's RIFF parser) can read it.
+            mp3_tmp = out.with_suffix(out.suffix + ".mp3")
+            tts.save(str(mp3_tmp))
         except Exception as e:
             log.exception("gtts failed")
             return _err(
@@ -272,9 +276,22 @@ class LocalBackend(Backend):
                 hint="gTTS requires internet access",
                 requested_language=language,
             )
-        latency_ms = int((_time.time() - t0) * 1000)
 
         import soundfile as sf
+
+        try:
+            audio_data, sr = sf.read(str(mp3_tmp))
+            sf.write(str(out), audio_data, int(sr), subtype="PCM_16")
+        except Exception as e:  # noqa: BLE001
+            log.exception("mp3 → wav transcode failed")
+            return _err(
+                f"gTTS MP3 → WAV transcode failed: {e}",
+                hint="libsndfile may lack MP3 support in this build",
+                requested_language=language,
+            )
+        finally:
+            mp3_tmp.unlink(missing_ok=True)
+        latency_ms = int((_time.time() - t0) * 1000)
 
         info = sf.info(str(out))
 

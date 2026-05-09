@@ -85,6 +85,7 @@ langdetect = [
 [project.scripts]
 aawazz-mcp = "aawazz_mcp.cli:main"
 aawazz-dictate = "aawazz_mcp.dictate:main"
+aawazz-converse = "aawazz_mcp.converse:main"
 
 [project.urls]
 Homepage = "https://github.com/nixpt/aawazz-mcp"

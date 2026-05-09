@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import multiprocessing as mp
 import os
 import shutil
 import subprocess
@@ -174,6 +175,74 @@ def _beep(start: bool) -> None:
 # -------------------------------------------------------- capture + transcribe
 
 
+def _capture_worker(
+    duration_s: float,
+    output_path: str,
+    queue: "mp.Queue[dict[str, Any]]",
+) -> None:
+    """Child-process mic capture so the parent can hard-kill stuck audio I/O."""
+    try:
+        from aawazz_mcp.audio.capture import record_to_wav
+
+        result = asyncio.run(record_to_wav(duration_s=duration_s, output_path=output_path))
+    except Exception as exc:  # noqa: BLE001
+        result = {
+            "audio_path": None,
+            "error": f"mic capture failed: {exc}",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }
+    queue.put(result)
+
+
+def _record_to_wav_hard_timeout(
+    duration_s: float,
+    output_path: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Run capture in a child process and terminate it if PortAudio wedges."""
+    ctx = mp.get_context("spawn")
+    queue: "mp.Queue[dict[str, Any]]" = ctx.Queue(maxsize=1)
+    proc = ctx.Process(
+        target=_capture_worker,
+        args=(duration_s, output_path, queue),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(timeout_s)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(2.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(2.0)
+        return {
+            "audio_path": None,
+            "error": "mic capture timed out (no samples arrived)",
+            "hint": (
+                f"device enumerated but produced no samples in {timeout_s:.1f}s. "
+                "Check: OS mute, UEFI mute, PulseAudio/PipeWire source routing, "
+                "container audio passthrough."
+            ),
+        }
+
+    if proc.exitcode not in (0, None):
+        return {
+            "audio_path": None,
+            "error": f"mic capture process exited with code {proc.exitcode}",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }
+
+    try:
+        return queue.get_nowait()
+    except Exception:
+        return {
+            "audio_path": None,
+            "error": "mic capture process returned no result",
+            "hint": "check sounddevice / PortAudio input device configuration",
+        }
+
+
 async def _capture_and_transcribe(
     duration_s: float,
     language: str,
@@ -181,7 +250,7 @@ async def _capture_and_transcribe(
     save_audio: Path | None,
 ) -> dict[str, Any]:
     """Record mic → transcribe via local Moonshine. v0 is local-only."""
-    from aawazz_mcp.audio.capture import has_input_device, record_to_wav
+    from aawazz_mcp.audio.capture import has_input_device
 
     if not has_input_device():
         return {
@@ -203,28 +272,14 @@ async def _capture_and_transcribe(
         capture_path = Path(tmp.name)
         delete_after = True
 
-    # NOTE: sd.wait() inside record_to_wav blocks until N samples arrive. A
-    # device that enumerates but produces no samples (muted at OS / UEFI,
-    # routing wrong PulseAudio source, etc.) hangs forever. Wrap with a
-    # generous timeout so the script returns cleanly. The underlying sd.rec
-    # thread leaks until process exit; that's acceptable for a one-shot CLI.
-    # The same bug exists in the MCP listen tool — separate fix.
-    try:
-        rec = await asyncio.wait_for(
-            record_to_wav(duration_s=duration_s, output_path=str(capture_path)),
-            timeout=duration_s + 5.0,
-        )
-    except asyncio.TimeoutError:
-        if delete_after:
-            capture_path.unlink(missing_ok=True)
-        return {
-            "error": "mic capture timed out (no samples arrived)",
-            "hint": (
-                f"device enumerated but produced no samples in {duration_s + 5.0:.1f}s. "
-                "Check: OS mute, UEFI mute, PulseAudio/PipeWire source routing, "
-                "container audio passthrough."
-            ),
-        }
+    # sd.wait() can wedge inside PortAudio when the device enumerates but never
+    # yields samples. A child process gives this hotkey CLI a real hard timeout.
+    rec = await asyncio.to_thread(
+        _record_to_wav_hard_timeout,
+        duration_s,
+        str(capture_path),
+        duration_s + 5.0,
+    )
     if rec.get("error") or rec.get("audio_path") is None:
         if delete_after:
             capture_path.unlink(missing_ok=True)

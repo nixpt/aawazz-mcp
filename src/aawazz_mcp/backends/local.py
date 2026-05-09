@@ -324,7 +324,7 @@ class LocalBackend(Backend):
         try:
             from aawazz_mcp.audio.capture import record_to_wav
 
-            await record_to_wav(
+            capture = await record_to_wav(
                 duration_s=duration_s,
                 output_path=str(capture_path),
             )
@@ -337,6 +337,19 @@ class LocalBackend(Backend):
                 hint="check that a default input device exists; "
                 "voices_list().capabilities.listen reports availability",
                 requested_duration_s=duration_s,
+            )
+        if capture.get("error") or capture.get("audio_path") is None:
+            if not save_audio:
+                capture_path.unlink(missing_ok=True)
+            return _err(
+                f"mic capture failed: {capture.get('error', 'no audio path returned')}",
+                hint=capture.get(
+                    "hint",
+                    "check that a default input device exists; "
+                    "voices_list().capabilities.listen reports availability",
+                ),
+                requested_duration_s=duration_s,
+                requested_audio_path=str(capture_path),
             )
 
         try:

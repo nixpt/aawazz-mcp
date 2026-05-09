@@ -37,7 +37,8 @@ htmlcov/
 *.flac
 
 # Models / caches we should never commit
-models/
+# (root-anchored so src/aawazz_mcp/models/ — the loader package — is unaffected)
+/models/
 .cache/
 ~/.cache/aawazz/
 

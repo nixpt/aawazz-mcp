@@ -63,9 +63,25 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
         format="%(asctime)s %(levelname)s aawazz-mcp %(message)s",
     )
-    raise NotImplementedError(
-        "Wave 2: wire AawazzConfig.from_args(args) → build_server(cfg) → mcp.run(transport=args.transport)"
-    )
+
+    # Imported lazily so `--help` doesn't drag in the FastMCP / Dispatcher tree.
+    from aawazz_mcp.config import AawazzConfig  # noqa: PLC0415
+    from aawazz_mcp.server import build_server  # noqa: PLC0415
+
+    cfg = AawazzConfig.from_args(args)
+    log = logging.getLogger("aawazz-mcp")
+    log.info("%s transport=%s", cfg.summary(), cfg.transport)
+
+    mcp = build_server(cfg)
+
+    if cfg.transport == "streamable-http":
+        # FastMCP reads host/port from settings, not run() kwargs (mcp 1.24+).
+        mcp.settings.host = cfg.host
+        mcp.settings.port = cfg.port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
+    return 0
 
 
 if __name__ == "__main__":

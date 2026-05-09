@@ -61,6 +61,7 @@ testpaths = ["tests"]
 markers = [
     "remote: tests that require captain's running aawazz-mouth/ears FastAPI servers (port 7861/7862)",
     "mic: tests that require a working audio input device",
+    "slow: tests that load tiny-tts / Moonshine models (>5s on cold cache)",
 ]
 
 [tool.ruff]

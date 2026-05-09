@@ -33,7 +33,7 @@ speak(
 ) -> {
     "audio_path": str,
     "duration_s": float,
-    "sample_rate": int,                   # tiny-tts emits 22050
+    "sample_rate": int,                   # tiny-tts emits 44100 (verified live; resampled from native 22050 internally)
     "latency_ms": int,
     "voice": str,
     "speed": float,

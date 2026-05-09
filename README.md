@@ -329,6 +329,75 @@ Silent fallback would mask misconfig; you explicitly opted into remote. v1.1 may
 
 ---
 
+## Dictation (push-to-talk)
+
+`pip install` also lands an **`aawazz-dictate`** console script — a standalone
+push-to-talk dictation CLI. Not an MCP tool: it lives entirely on the
+operator's machine, captures mic audio, runs Moonshine, and dispatches the
+transcript via:
+
+- **`type`** — keystroke injection into the focused window (`xdotool` on X11, `wtype`/`ydotool` on Wayland, `osascript` on macOS).
+- **`clipboard`** — paste into the system clipboard (`xclip`/`xsel` on X11, `wl-copy` on Wayland, `pbcopy` on macOS).
+- **`stdout`** — print the transcript only (safe smoke / pipeline use).
+
+Designed for hotkey binding when typing is inconvenient (wet hands, cooking,
+walking). Bind any key in your window manager / DE settings to:
+
+```bash
+aawazz-dictate                 # 8s capture, auto-pick output mode
+```
+
+Auto-mode prefers `type` → `clipboard` → `stdout` based on what's installed
+for the detected session type.
+
+**Common invocations**
+
+```bash
+aawazz-dictate                          # default: 8s, auto output
+aawazz-dictate -d 4                     # shorter capture
+aawazz-dictate -m clipboard             # force clipboard (paste with Ctrl-V)
+aawazz-dictate -m stdout                # safest mode — pipe-friendly
+aawazz-dictate -v --save-audio /tmp/note.wav  # debug + keep WAV
+aawazz-dictate --no-beep                # silence the start/stop tones
+```
+
+**Exit codes** (useful for hotkey wrapper scripts)
+
+| Code | Meaning |
+|---|---|
+| 0 | Transcript dispatched successfully |
+| 1 | No input device (mic missing, OS-muted, sandboxed) |
+| 2 | Transcribe returned empty / failed |
+| 3 | Output dispatch failed (typer/clipboarder errored) |
+| 4 | No typer or clipboarder available for the detected session |
+
+**Hotkey-binding examples**
+
+Hyprland (`~/.config/hypr/hyprland.conf`):
+```
+bind = SUPER, V, exec, aawazz-dictate -m clipboard
+```
+
+i3 (`~/.config/i3/config`):
+```
+bindsym $mod+v exec --no-startup-id aawazz-dictate -m type
+```
+
+GNOME / KDE: bind via Settings → Keyboard → Custom Shortcuts → command `aawazz-dictate`.
+
+**Caveats**
+
+- **Wayland typer**: `wtype` is not installed by default on most distros. `sudo apt install wtype` (Debian/Ubuntu) / `sudo pacman -S wtype` (Arch). Without a typer, auto-mode falls back to clipboard.
+- **macOS `type` mode**: AppleScript keystroke is fragile with text containing `"`. Prefer `-m clipboard`.
+- **First-run latency**: Moonshine cold-load is ~10–30 s on a fresh install. Subsequent calls are sub-second. Run `python -m aawazz_mcp.scripts.prefetch_models` to pre-warm.
+- **Mic muted at OS / UEFI**: `aawazz-dictate` exits 1 with a structured stderr message — your hotkey script can branch on the exit code to surface a notification.
+
+The dictation flow uses the same Moonshine STT as the MCP `transcribe` tool —
+share the cache, share the install. v0 ships local-only; future versions may
+add `--remote` to delegate to an `aawazz-ears` FastAPI service.
+
+---
+
 ## Tools
 
 Four tools and one resource. Tool docstrings become MCP tool descriptions verbatim — what your agent sees in `tools/list` mirrors the contracts below.

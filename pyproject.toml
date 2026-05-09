@@ -50,6 +50,12 @@ multilingual = [
     "transformers>=4.40",
     "torch>=2.0",
 ]
+# Optional: Piper ONNX TTS — multi-voice, multi-language, offline after voice
+# download. Voices auto-download to ~/.local/share/aawazz/piper-voices/ on
+# first use unless AAWAZZ_PIPER_AUTO_DOWNLOAD=0.
+piper = [
+    "piper-tts>=1.4,<2.0",
+]
 
 [project.scripts]
 aawazz-mcp = "aawazz_mcp.cli:main"

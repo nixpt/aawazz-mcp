@@ -17,5 +17,6 @@ from __future__ import annotations
 # Import order doesn't matter — registration is idempotent within each module.
 from aawazz_mcp.providers import gtts_provider  # noqa: F401
 from aawazz_mcp.providers import moonshine  # noqa: F401
+from aawazz_mcp.providers import piper  # noqa: F401
 from aawazz_mcp.providers import tiny_tts  # noqa: F401
 from aawazz_mcp.providers import whisper  # noqa: F401

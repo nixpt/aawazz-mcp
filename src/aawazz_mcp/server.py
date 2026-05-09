@@ -66,17 +66,21 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         speed: float = 1.0,
         output_path: str | None = None,
         play: bool = False,
+        language: str = "en",
     ) -> dict:
-        """Synthesize speech from text via tiny-tts.
+        """Synthesize speech from text.
 
         Args:
             text: 1..4000 characters.
-            voice: Voice id. tiny-tts supports only "MALE" in v1.0.
+            voice: Voice id or DSP profile. tiny-tts ships "MALE"; DSP profiles:
+                DEEP, BRIGHT, SOFT, GRAVEL, ROBOT, ECHO, WIDE.
             speed: Playback speed, 0.5..2.0.
             output_path: Absolute path to write the WAV. Default: under
                 ``$AAWAZZ_HOME/mouth/<utc-ts>-<sha8>.wav``.
             play: If true and a desktop audio player is available
                 (paplay/aplay/afplay), autoplay the output WAV.
+            language: ISO 639-1 language code. "en" uses tiny-tts + DSP profiles;
+                other languages use gTTS (Google TTS, requires internet).
 
         Returns:
             ``{audio_path, duration_s, sample_rate, latency_ms, voice, speed,
@@ -88,6 +92,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             speed=speed,
             output_path=output_path,
             play=play,
+            language=language,
         )
 
     @mcp.tool()

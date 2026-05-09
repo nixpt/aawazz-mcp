@@ -38,14 +38,26 @@ from aawazz_mcp.backends.base import Backend
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.models.stt_loader import SttLoader, _arch_from_string
 from aawazz_mcp.models.tts_loader import TtsLoader
+from aawazz_mcp.models.whisper_stt import WhisperSttLoader, supported_languages as whisper_langs
 
 log = logging.getLogger("aawazz_mcp.backends.local")
 
 # tiny-tts voice catalog. tiny_tts.utils.config.SPK2ID == {"MALE": 0}; we
 # resolve at import time (cheap) and bail with a structured error rather
 # than letting tts.speak silently downgrade.
+# Additional profiles are DSP post-processing effects (see audio/dsp.py).
 _VOICE_MALE = "MALE"
-_AVAILABLE_VOICES = [_VOICE_MALE]
+_AVAILABLE_VOICES = [
+    "MALE",
+    "DEEP",
+    "BRIGHT",
+    "SOFT",
+    "GRAVEL",
+    "ROBOT",
+    "ECHO",
+    "WIDE",
+]
+_DSP_VOICES = frozenset(_AVAILABLE_VOICES) - {"MALE"}
 
 
 def _err(message: str, **extra: Any) -> dict:
@@ -62,6 +74,7 @@ class LocalBackend(Backend):
         self.cfg = cfg
         self._tts_loader: TtsLoader | None = None
         self._stt_loader: SttLoader | None = None
+        self._whisper_loader: WhisperSttLoader | None = None
 
     # ---------------------------------------------------------------- helpers
 
@@ -74,6 +87,11 @@ class LocalBackend(Backend):
         if self._stt_loader is None:
             self._stt_loader = SttLoader()
         return self._stt_loader
+
+    def _get_whisper_stt(self) -> WhisperSttLoader:
+        if self._whisper_loader is None:
+            self._whisper_loader = WhisperSttLoader()
+        return self._whisper_loader
 
     # ------------------------------------------------------------------ warm
 
@@ -99,15 +117,28 @@ class LocalBackend(Backend):
         speed: float = 1.0,
         output_path: str | None = None,
         play: bool = False,
+        language: str = "en",
     ) -> dict:
-        """Synthesize ``text`` to a WAV. See SPEC §1.1 for response shape."""
-        # Voice validation — reject anything that isn't MALE. tiny-tts itself
-        # would silently downgrade, which masks misconfig; we tighten here.
+        """Synthesize ``text`` to a WAV. See SPEC §1.1 for response shape.
+
+        English uses tiny-tts + DSP profiles; other languages use gTTS.
+        """
         normalized_voice = (voice or "").upper()
-        if normalized_voice != _VOICE_MALE:
+
+        # Non-English TTS via gTTS (lightweight, needs internet).
+        if language != "en":
+            return await self._speak_gtts(
+                text=text,
+                output_path=output_path,
+                language=language,
+                play=play,
+            )
+
+        # Voice validation for tiny-tts / DSP profiles.
+        if normalized_voice not in _AVAILABLE_VOICES:
             return _err(
-                f"voice {voice!r} not supported by tiny-tts; "
-                f"only {_VOICE_MALE!r} ships",
+                f"voice {voice!r} not supported; "
+                f"available: {', '.join(_AVAILABLE_VOICES)}",
                 available_voices=list(_AVAILABLE_VOICES),
                 requested_voice=voice,
             )
@@ -141,11 +172,13 @@ class LocalBackend(Backend):
         else:
             out = default_output_dir() / hashed_wav_name(text)
 
+        # tiny-tts always uses "MALE" internally; we apply DSP profiles after.
+        tts_voice = "MALE" if normalized_voice in _DSP_VOICES else normalized_voice
         try:
             meta = await self._get_tts().synthesize(
                 text=text,
                 output_path=str(out),
-                voice=normalized_voice,
+                voice=tts_voice,
                 speed=float(speed),
             )
         except Exception as e:  # noqa: BLE001 — tiny-tts wraps a pile of errors
@@ -154,6 +187,21 @@ class LocalBackend(Backend):
                 f"synthesis failed: {e}",
                 hint="check stderr for tiny-tts traceback",
             )
+
+        # Apply DSP voice profile if not plain MALE.
+        if normalized_voice in _DSP_VOICES:
+            try:
+                import soundfile as sf
+                from aawazz_mcp.audio.dsp import apply_profile
+
+                audio, sr = sf.read(str(out))
+                processed = apply_profile(audio, int(sr), normalized_voice)
+                sf.write(str(out), processed, int(sr))
+                info = sf.info(str(out))
+                meta["duration_s"] = float(info.duration)
+                meta["sample_rate"] = int(info.samplerate)
+            except Exception as e:  # noqa: BLE001
+                log.exception("DSP profile %s failed", normalized_voice)
 
         played = False
         if play:
@@ -176,6 +224,81 @@ class LocalBackend(Backend):
             "backend": "local",
         }
 
+    # ------------------------------------------------------------- gtts speak
+
+    async def _speak_gtts(
+        self,
+        text: str,
+        output_path: str | None,
+        language: str,
+        play: bool,
+    ) -> dict:
+        """Synthesize via gTTS. No DSP support, no voice selection."""
+        from pathlib import Path
+
+        from aawazz_mcp.audio.paths import default_output_dir, hashed_wav_name
+
+        if not text or not text.strip():
+            return _err("text is empty", requested_text=text)
+        if len(text) > 4000:
+            return _err(
+                f"text length {len(text)} exceeds 4000-char cap",
+                requested_text_length=len(text),
+            )
+
+        if output_path:
+            out = Path(output_path).expanduser()
+            if not out.is_absolute():
+                return _err(
+                    f"output_path must be absolute, got {output_path!r}",
+                    requested_output_path=output_path,
+                )
+            out.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            out = default_output_dir() / hashed_wav_name(text)
+
+        import time as _time
+
+        t0 = _time.time()
+        try:
+            from gtts import gTTS
+
+            tts = gTTS(text, lang=language)
+            tts.save(str(out))
+        except Exception as e:
+            log.exception("gtts failed")
+            return _err(
+                f"gTTS synthesis failed: {e}",
+                hint="gTTS requires internet access",
+                requested_language=language,
+            )
+        latency_ms = int((_time.time() - t0) * 1000)
+
+        import soundfile as sf
+
+        info = sf.info(str(out))
+
+        played = False
+        if play:
+            try:
+                from aawazz_mcp.audio.playback import play as _play
+
+                played = bool(_play(str(out)))
+            except Exception as e:
+                log.warning("playback failed: %s", e)
+
+        return {
+            "audio_path": str(out),
+            "duration_s": float(info.duration),
+            "sample_rate": int(info.samplerate),
+            "latency_ms": latency_ms,
+            "voice": "gtts",
+            "speed": 1.0,
+            "text_hash": _text_hash(text),
+            "played": played,
+            "backend": "local-gtts",
+        }
+
     # -------------------------------------------------------------- transcribe
 
     async def transcribe(
@@ -185,17 +308,17 @@ class LocalBackend(Backend):
         model_arch: str = "tiny_streaming",
     ) -> dict:
         """Transcribe a local WAV (or http(s) URL). See SPEC §1.2."""
-        # Validate model_arch up front so the caller gets a clean error before
-        # we hit a model load.
-        try:
-            _arch_from_string(model_arch)
-        except ValueError as e:
-            return _err(
-                str(e),
-                requested_model_arch=model_arch,
-                hint="valid: tiny, tiny_streaming, base, base_streaming, "
-                "small_streaming, medium_streaming",
-            )
+        # Validate model_arch up front (skip for whisper-only languages).
+        if language not in whisper_langs():
+            try:
+                _arch_from_string(model_arch)
+            except ValueError as e:
+                return _err(
+                    str(e),
+                    requested_model_arch=model_arch,
+                    hint="valid: tiny, tiny_streaming, base, base_streaming, "
+                    "small_streaming, medium_streaming",
+                )
 
         # http(s) URL → download to tempfile, transcribe, unlink.
         downloaded_tmp: Path | None = None
@@ -212,26 +335,30 @@ class LocalBackend(Backend):
         else:
             local_path = audio_path
 
+        # Nepali (and future whisper-only langs) route through Whisper STT.
         try:
-            try:
+            if language in whisper_langs():
+                meta = await self._get_whisper_stt().transcribe(
+                    audio_path=local_path,
+                    language=language,
+                )
+            else:
                 meta = await self._get_stt().transcribe(
                     audio_path=local_path,
                     language=language,
                     model_arch=model_arch,
                 )
-            except FileNotFoundError as e:
-                return _err(
-                    str(e),
-                    requested_audio_path=audio_path,
-                )
-            except IsADirectoryError as e:
-                return _err(str(e), requested_audio_path=audio_path)
-            except Exception as e:  # noqa: BLE001
-                log.exception("stt transcribe failed")
-                return _err(
-                    f"transcribe failed: {e}",
-                    requested_audio_path=audio_path,
-                )
+        except FileNotFoundError as e:
+            return _err(str(e), requested_audio_path=audio_path)
+        except IsADirectoryError as e:
+            return _err(str(e), requested_audio_path=audio_path)
+        except Exception as e:
+            backend = "whisper_stt" if language in whisper_langs() else "moonshine_stt"
+            log.exception("%s transcribe failed", backend)
+            return _err(
+                f"transcribe failed: {e}",
+                requested_audio_path=audio_path,
+            )
         finally:
             if downloaded_tmp is not None:
                 try:
@@ -360,11 +487,17 @@ class LocalBackend(Backend):
             )
 
         try:
-            meta = await self._get_stt().transcribe(
-                audio_path=str(capture_path),
-                language=language,
-                model_arch=model_arch,
-            )
+            if language in whisper_langs():
+                meta = await self._get_whisper_stt().transcribe(
+                    audio_path=str(capture_path),
+                    language=language,
+                )
+            else:
+                meta = await self._get_stt().transcribe(
+                    audio_path=str(capture_path),
+                    language=language,
+                    model_arch=model_arch,
+                )
         except Exception as e:  # noqa: BLE001
             log.exception("listen → transcribe failed")
             if not save_audio:

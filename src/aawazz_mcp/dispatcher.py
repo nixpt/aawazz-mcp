@@ -80,6 +80,8 @@ class Dispatcher:
             await self._ensure_local().warm()
 
     async def speak(self, **kwargs) -> dict:
+        # Non-English TTS routes through gTTS (in local backend).
+        # Remote backend also passes language through if present.
         return await self._mouth_backend().speak(**kwargs)
 
     async def transcribe(self, **kwargs) -> dict:
@@ -105,12 +107,35 @@ class Dispatcher:
 
         return {
             "tts": {
-                "backend": "tiny-tts",
-                "voices": [{"id": "MALE", "language": "en", "default": True}],
+                "backend": "tiny-tts + DSP profiles",
+                "voices": [
+                    {"id": "MALE", "language": "en", "default": True},
+                    {"id": "DEEP", "description": "Lower pitch, warm lowpass"},
+                    {"id": "BRIGHT", "description": "Higher pitch, airy highpass"},
+                    {"id": "SOFT", "description": "Warm lowpass, smoothed"},
+                    {"id": "GRAVEL", "description": "Subtle saturation, pitch-down"},
+                    {"id": "ROBOT", "description": "Rectify + bandpass", "fun": True},
+                    {"id": "ECHO", "description": "Single echo tap at 300ms"},
+                    {"id": "WIDE", "description": "Pitch-up + reverb tail"},
+                ],
+                "voice_profiles": True,
+                "note": "Voice profiles are DSP post-processing effects applied to tiny-tts output. Zero additional models required.",
             },
             "stt": {
                 "backend": "moonshine",
-                "languages": ["en"],
+                "languages": ["en", "es", "zh", "ja", "ko", "ar", "vi", "uk", "ne"],
+                "lang_models": {
+                    "en": ["tiny", "tiny_streaming", "base", "base_streaming", "small_streaming", "medium_streaming"],
+                    "es": ["base"],
+                    "zh": ["base"],
+                    "ja": ["tiny", "base"],
+                    "ko": ["tiny"],
+                    "ar": ["base"],
+                    "vi": ["base"],
+                    "uk": ["base"],
+                    "ne": ["whisper-small"],
+                },
+                "note": "Languages marked 'whisper-small' use a Whisper-based model; others use Moonshine.",
                 "model_archs": [
                     "tiny",
                     "tiny_streaming",

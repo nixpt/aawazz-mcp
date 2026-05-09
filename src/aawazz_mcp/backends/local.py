@@ -36,9 +36,20 @@ from aawazz_mcp.audio.paths import (
 )
 from aawazz_mcp.backends.base import Backend
 from aawazz_mcp.config import AawazzConfig
-from aawazz_mcp.models.stt_loader import SttLoader, _arch_from_string
-from aawazz_mcp.models.tts_loader import TtsLoader
-from aawazz_mcp.models.whisper_stt import WhisperSttLoader, supported_languages as whisper_langs
+from aawazz_mcp.models.stt_loader import _arch_from_string
+from aawazz_mcp.models.whisper_stt import supported_languages as whisper_langs
+from aawazz_mcp.provider_base import (
+    ProviderError,
+    SttRequest,
+    TtsRequest,
+)
+from aawazz_mcp import registry as _registry
+
+# Importing the providers package triggers built-in registration as a side
+# effect. Phase-2 routing will replace the hardcoded provider names below
+# (``"tiny-tts"`` / ``"gtts"`` / ``"moonshine"`` / ``"whisper"``) with the
+# routing chain.
+import aawazz_mcp.providers  # noqa: F401, PLC0415
 
 log = logging.getLogger("aawazz_mcp.backends.local")
 
@@ -72,38 +83,18 @@ class LocalBackend(Backend):
 
     def __init__(self, cfg: AawazzConfig) -> None:
         self.cfg = cfg
-        self._tts_loader: TtsLoader | None = None
-        self._stt_loader: SttLoader | None = None
-        self._whisper_loader: WhisperSttLoader | None = None
-
-    # ---------------------------------------------------------------- helpers
-
-    def _get_tts(self) -> TtsLoader:
-        if self._tts_loader is None:
-            self._tts_loader = TtsLoader()
-        return self._tts_loader
-
-    def _get_stt(self) -> SttLoader:
-        if self._stt_loader is None:
-            self._stt_loader = SttLoader()
-        return self._stt_loader
-
-    def _get_whisper_stt(self) -> WhisperSttLoader:
-        if self._whisper_loader is None:
-            self._whisper_loader = WhisperSttLoader()
-        return self._whisper_loader
 
     # ------------------------------------------------------------------ warm
 
     async def warm(self) -> None:
-        """Eagerly load TTS + the configured default STT arch.
+        """Eagerly load default TTS + STT models.
 
         Used by ``aawazz-mcp --warm`` and ``scripts/prefetch_models.py``. Lazy
         is the runtime default — eager warm at startup is opt-in because some
         MCP runtimes time out the ``initialize`` call after 5-10s.
         """
-        await self._get_tts().load()
-        await self._get_stt().load(
+        await _registry.get_tts("tiny-tts").warm()
+        await _registry.get_stt("moonshine").warm(
             language=self.cfg.default_language,
             model_arch=self.cfg.default_model_arch,
         )
@@ -175,12 +166,17 @@ class LocalBackend(Backend):
         # tiny-tts always uses "MALE" internally; we apply DSP profiles after.
         tts_voice = "MALE" if normalized_voice in _DSP_VOICES else normalized_voice
         try:
-            meta = await self._get_tts().synthesize(
-                text=text,
-                output_path=str(out),
-                voice=tts_voice,
-                speed=float(speed),
+            tts_result = await _registry.get_tts("tiny-tts").synthesize(
+                TtsRequest(
+                    text=text,
+                    language="en",
+                    voice=tts_voice,
+                    speed=float(speed),
+                    output_path=str(out),
+                )
             )
+        except ProviderError as e:
+            return _err(str(e), hint="check stderr for provider traceback")
         except Exception as e:  # noqa: BLE001 — tiny-tts wraps a pile of errors
             log.exception("tts synthesize failed")
             return _err(
@@ -188,7 +184,14 @@ class LocalBackend(Backend):
                 hint="check stderr for tiny-tts traceback",
             )
 
-        # Apply DSP voice profile if not plain MALE.
+        audio_path = tts_result.audio_path
+        duration_s = tts_result.duration_s
+        sample_rate = tts_result.sample_rate
+        latency_ms = tts_result.latency_ms
+
+        # Apply DSP voice profile if not plain MALE. Phase 5 moves this into
+        # a PostProcessor pipeline; for phase 1 it stays inline to preserve
+        # behavior identically to v1.2.x.
         if normalized_voice in _DSP_VOICES:
             try:
                 import soundfile as sf
@@ -198,9 +201,9 @@ class LocalBackend(Backend):
                 processed = apply_profile(audio, int(sr), normalized_voice)
                 sf.write(str(out), processed, int(sr))
                 info = sf.info(str(out))
-                meta["duration_s"] = float(info.duration)
-                meta["sample_rate"] = int(info.samplerate)
-            except Exception as e:  # noqa: BLE001
+                duration_s = float(info.duration)
+                sample_rate = int(info.samplerate)
+            except Exception:  # noqa: BLE001
                 log.exception("DSP profile %s failed", normalized_voice)
 
         played = False
@@ -208,15 +211,15 @@ class LocalBackend(Backend):
             try:
                 from aawazz_mcp.audio.playback import play as _play
 
-                played = bool(_play(meta["audio_path"]))
+                played = bool(_play(audio_path))
             except Exception as e:  # noqa: BLE001 — never crash speak() over playback
                 log.warning("playback failed: %s", e)
 
         return {
-            "audio_path": meta["audio_path"],
-            "duration_s": meta["duration_s"],
-            "sample_rate": meta["sample_rate"],
-            "latency_ms": meta["latency_ms"],
+            "audio_path": audio_path,
+            "duration_s": duration_s,
+            "sample_rate": sample_rate,
+            "latency_ms": latency_ms,
             "voice": normalized_voice,
             "speed": float(speed),
             "text_hash": _text_hash(text),
@@ -257,58 +260,35 @@ class LocalBackend(Backend):
         else:
             out = default_output_dir() / hashed_wav_name(text)
 
-        import time as _time
-
-        t0 = _time.time()
         try:
-            from gtts import gTTS
-
-            tts = gTTS(text, lang=language)
-            # gTTS emits MP3; write to a .mp3 sibling, then transcode to PCM WAV
-            # so the file at ``out`` honors its .wav extension and downstream
-            # WAV-only consumers (Moonshine's RIFF parser) can read it.
-            mp3_tmp = out.with_suffix(out.suffix + ".mp3")
-            tts.save(str(mp3_tmp))
-        except Exception as e:
-            log.exception("gtts failed")
+            tts_result = await _registry.get_tts("gtts").synthesize(
+                TtsRequest(
+                    text=text,
+                    language=language,
+                    output_path=str(out),
+                )
+            )
+        except ProviderError as e:
             return _err(
-                f"gTTS synthesis failed: {e}",
+                str(e),
                 hint="gTTS requires internet access",
                 requested_language=language,
             )
-
-        import soundfile as sf
-
-        try:
-            audio_data, sr = sf.read(str(mp3_tmp))
-            sf.write(str(out), audio_data, int(sr), subtype="PCM_16")
-        except Exception as e:  # noqa: BLE001
-            log.exception("mp3 → wav transcode failed")
-            return _err(
-                f"gTTS MP3 → WAV transcode failed: {e}",
-                hint="libsndfile may lack MP3 support in this build",
-                requested_language=language,
-            )
-        finally:
-            mp3_tmp.unlink(missing_ok=True)
-        latency_ms = int((_time.time() - t0) * 1000)
-
-        info = sf.info(str(out))
 
         played = False
         if play:
             try:
                 from aawazz_mcp.audio.playback import play as _play
 
-                played = bool(_play(str(out)))
-            except Exception as e:
+                played = bool(_play(tts_result.audio_path))
+            except Exception as e:  # noqa: BLE001
                 log.warning("playback failed: %s", e)
 
         return {
-            "audio_path": str(out),
-            "duration_s": float(info.duration),
-            "sample_rate": int(info.samplerate),
-            "latency_ms": latency_ms,
+            "audio_path": tts_result.audio_path,
+            "duration_s": tts_result.duration_s,
+            "sample_rate": tts_result.sample_rate,
+            "latency_ms": tts_result.latency_ms,
             "voice": "gtts",
             "speed": 1.0,
             "text_hash": _text_hash(text),
@@ -353,25 +333,23 @@ class LocalBackend(Backend):
             local_path = audio_path
 
         # Nepali (and future whisper-only langs) route through Whisper STT.
+        provider_name = "whisper" if language in whisper_langs() else "moonshine"
         try:
-            if language in whisper_langs():
-                meta = await self._get_whisper_stt().transcribe(
+            stt_result = await _registry.get_stt(provider_name).transcribe(
+                SttRequest(
                     audio_path=local_path,
                     language=language,
+                    model_arch=None if provider_name == "whisper" else model_arch,
                 )
-            else:
-                meta = await self._get_stt().transcribe(
-                    audio_path=local_path,
-                    language=language,
-                    model_arch=model_arch,
-                )
+            )
+        except ProviderError as e:
+            return _err(str(e), requested_audio_path=audio_path)
         except FileNotFoundError as e:
             return _err(str(e), requested_audio_path=audio_path)
         except IsADirectoryError as e:
             return _err(str(e), requested_audio_path=audio_path)
         except Exception as e:
-            backend = "whisper_stt" if language in whisper_langs() else "moonshine_stt"
-            log.exception("%s transcribe failed", backend)
+            log.exception("%s transcribe failed", provider_name)
             return _err(
                 f"transcribe failed: {e}",
                 requested_audio_path=audio_path,
@@ -384,10 +362,10 @@ class LocalBackend(Backend):
                     log.warning("could not unlink temp %s", downloaded_tmp)
 
         return {
-            "text": meta["text"],
-            "audio_duration_s": meta["audio_duration_s"],
-            "sample_rate": meta["sample_rate"],
-            "latency_ms": meta["latency_ms"],
+            "text": stt_result.text,
+            "audio_duration_s": stt_result.audio_duration_s,
+            "sample_rate": stt_result.sample_rate,
+            "latency_ms": stt_result.latency_ms,
             "model_arch": model_arch,
             "language": language,
             "audio_path": audio_path,  # echo the caller's input (URL or path)
@@ -503,18 +481,19 @@ class LocalBackend(Backend):
                 requested_audio_path=str(capture_path),
             )
 
+        provider_name = "whisper" if language in whisper_langs() else "moonshine"
         try:
-            if language in whisper_langs():
-                meta = await self._get_whisper_stt().transcribe(
+            stt_result = await _registry.get_stt(provider_name).transcribe(
+                SttRequest(
                     audio_path=str(capture_path),
                     language=language,
+                    model_arch=None if provider_name == "whisper" else model_arch,
                 )
-            else:
-                meta = await self._get_stt().transcribe(
-                    audio_path=str(capture_path),
-                    language=language,
-                    model_arch=model_arch,
-                )
+            )
+        except ProviderError as e:
+            if not save_audio:
+                capture_path.unlink(missing_ok=True)
+            return _err(str(e), requested_audio_path=str(capture_path))
         except Exception as e:  # noqa: BLE001
             log.exception("listen → transcribe failed")
             if not save_audio:
@@ -525,10 +504,10 @@ class LocalBackend(Backend):
             )
 
         result = {
-            "text": meta["text"],
-            "audio_duration_s": meta["audio_duration_s"],
-            "sample_rate": meta["sample_rate"],
-            "latency_ms": meta["latency_ms"],
+            "text": stt_result.text,
+            "audio_duration_s": stt_result.audio_duration_s,
+            "sample_rate": stt_result.sample_rate,
+            "latency_ms": stt_result.latency_ms,
             "model_arch": model_arch,
             "language": language,
             "audio_path": str(capture_path) if save_audio else None,

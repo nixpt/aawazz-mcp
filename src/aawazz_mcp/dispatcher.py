@@ -94,47 +94,130 @@ class Dispatcher:
     # ----- Metadata / probes -------------------------------------------------
 
     async def voices_list(self) -> dict:
-        """Pure metadata; no model load. Synthesised from cfg + capability probes.
+        """Pure metadata; no model load. v1.3 response shape:
 
-        Capability probes call into ``aawazz_mcp.audio.{capture,playback}``
-        for the listen/play flags — both modules are defensively coded to
-        return False rather than raise on missing devices.
+        - ``providers.{tts,stt,post_processors}`` — each provider's
+          capabilities scraped from the registry.
+        - ``routing.{tts,stt}`` — the resolved routing chain. Phase 1 emits
+          the hardcoded chain (en→tiny-tts, ne→whisper, default→gtts/moonshine);
+          phase 2 will read the configurable chain.
+        - ``capabilities`` — listen/play probes + backend mode (back-compat).
+        - ``tts``, ``stt`` — flattened v1 alias views for callers still on the
+          v1.0 / v1.2 response shape. Will be removed in v2.0.
         """
-        # Imported lazily so importing the dispatcher module never triggers
-        # sounddevice / subprocess probes at module-load time.
         from aawazz_mcp.audio.capture import has_input_device  # noqa: PLC0415
         from aawazz_mcp.audio.playback import has_player  # noqa: PLC0415
+        from aawazz_mcp import providers  # noqa: F401, PLC0415  - register builtins
+        from aawazz_mcp import registry as _registry  # noqa: PLC0415
+
+        # ── Provider catalog ────────────────────────────────────────────────
+        tts_providers = []
+        for p in _registry.list_tts():
+            caps = p.capabilities()
+            tts_providers.append({
+                "name": p.name,
+                "version": p.version,
+                "languages": sorted(caps.languages),
+                "voices": [
+                    {
+                        "id": v.id,
+                        "language": v.language,
+                        "description": v.description,
+                        "default": v.default,
+                    }
+                    for v in caps.voices
+                ],
+                "requires_network": caps.requires_network,
+                "sample_rate": caps.sample_rate,
+                "accepts_dsp_profiles": caps.accepts_dsp_profiles,
+                "speed_range": list(caps.speed_range),
+                "notes": caps.notes,
+            })
+
+        stt_providers = []
+        for p in _registry.list_stt():
+            caps = p.capabilities()
+            stt_providers.append({
+                "name": p.name,
+                "version": p.version,
+                "languages": sorted(caps.languages),
+                "model_archs": {
+                    lang: list(archs)
+                    for lang, archs in caps.model_archs.items()
+                },
+                "accepts_url": caps.accepts_url,
+                "cold_load_seconds_estimate": caps.cold_load_seconds_estimate,
+                "notes": caps.notes,
+            })
+
+        post_processors = []
+        for p in _registry.list_post():
+            post_processors.append({
+                "name": p.name,
+                "direction": p.direction,
+            })
+
+        # ── Phase-1 hardcoded routing (see LocalBackend.speak/transcribe) ───
+        routing = {
+            "tts": {
+                "en": ["tiny-tts"],
+                "default": ["gtts"],
+            },
+            "stt": {
+                "ne": ["whisper"],
+                "default": ["moonshine"],
+            },
+        }
+
+        # ── v1 alias views (back-compat for callers on the old shape) ──────
+        # DSP profiles still surface here as voice IDs — phase 5 graduates them
+        # to post_processors.
+        v1_tts_voices = [
+            {"id": "MALE", "language": "en", "default": True},
+            {"id": "DEEP", "description": "Lower pitch, warm lowpass"},
+            {"id": "BRIGHT", "description": "Higher pitch, airy highpass"},
+            {"id": "SOFT", "description": "Warm lowpass, smoothed"},
+            {"id": "GRAVEL", "description": "Subtle saturation, pitch-down"},
+            {"id": "ROBOT", "description": "Rectify + bandpass", "fun": True},
+            {"id": "ECHO", "description": "Single echo tap at 300ms"},
+            {"id": "WIDE", "description": "Pitch-up + reverb tail"},
+        ]
+        v1_stt_lang_models: dict[str, list[str]] = {}
+        for p in _registry.list_stt():
+            caps = p.capabilities()
+            for lang, archs in caps.model_archs.items():
+                merged = v1_stt_lang_models.setdefault(lang, [])
+                for arch in archs:
+                    if arch not in merged:
+                        merged.append(arch)
 
         return {
+            "providers": {
+                "tts": tts_providers,
+                "stt": stt_providers,
+                "post_processors": post_processors,
+            },
+            "routing": routing,
+            "capabilities": {
+                "listen": bool(has_input_device()),
+                "play": bool(has_player()),
+                "backend_mode": self.cfg.mode,
+                "remote_url": {
+                    "mouth": self.cfg.remote_mouth_url,
+                    "ears": self.cfg.remote_ears_url,
+                },
+            },
+            # v1 alias views — back-compat for v1.0 / v1.2 callers.
             "tts": {
                 "backend": "tiny-tts + DSP profiles",
-                "voices": [
-                    {"id": "MALE", "language": "en", "default": True},
-                    {"id": "DEEP", "description": "Lower pitch, warm lowpass"},
-                    {"id": "BRIGHT", "description": "Higher pitch, airy highpass"},
-                    {"id": "SOFT", "description": "Warm lowpass, smoothed"},
-                    {"id": "GRAVEL", "description": "Subtle saturation, pitch-down"},
-                    {"id": "ROBOT", "description": "Rectify + bandpass", "fun": True},
-                    {"id": "ECHO", "description": "Single echo tap at 300ms"},
-                    {"id": "WIDE", "description": "Pitch-up + reverb tail"},
-                ],
+                "voices": v1_tts_voices,
                 "voice_profiles": True,
                 "note": "Voice profiles are DSP post-processing effects applied to tiny-tts output. Zero additional models required.",
             },
             "stt": {
                 "backend": "moonshine",
-                "languages": ["en", "es", "zh", "ja", "ko", "ar", "vi", "uk", "ne"],
-                "lang_models": {
-                    "en": ["tiny", "tiny_streaming", "base", "base_streaming", "small_streaming", "medium_streaming"],
-                    "es": ["base"],
-                    "zh": ["base"],
-                    "ja": ["tiny", "base"],
-                    "ko": ["tiny"],
-                    "ar": ["base"],
-                    "vi": ["base"],
-                    "uk": ["base"],
-                    "ne": ["whisper-small"],
-                },
+                "languages": sorted(v1_stt_lang_models.keys()),
+                "lang_models": v1_stt_lang_models,
                 "note": "Languages marked 'whisper-small' use a Whisper-based model; others use Moonshine.",
                 "model_archs": [
                     "tiny",
@@ -144,15 +227,6 @@ class Dispatcher:
                     "small_streaming",
                     "medium_streaming",
                 ],
-            },
-            "capabilities": {
-                "listen": bool(has_input_device()),
-                "play": bool(has_player()),
-                "backend_mode": self.cfg.mode,
-                "remote_url": {
-                    "mouth": self.cfg.remote_mouth_url,
-                    "ears": self.cfg.remote_ears_url,
-                },
             },
         }
 

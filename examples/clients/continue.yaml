@@ -1,10 +1,16 @@
+# ~/.continue/config.yaml — Continue MCP server config.
+#
+# Continue hot-reloads on save. No restart needed.
+# Per-project: drop a copy at .continue/config.yaml in the workspace root.
+
 modelContextProtocolServers:
   - name: aawazz
     type: stdio
     command: aawazz-mcp
     # args: []
 
-    # Optional: for hybrid mode against captain's existing FastAPI servers.
+    # Optional: hybrid mode — delegate to captain's existing FastAPI services.
+    # `listen` always runs locally (the mic is on this host).
     # env:
     #   AAWAZZ_MOUTH_URL: http://127.0.0.1:7861/tts
     #   AAWAZZ_EARS_URL: http://127.0.0.1:7862/transcribe

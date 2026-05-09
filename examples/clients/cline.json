@@ -1,4 +1,6 @@
 {
   "command": "aawazz-mcp",
-  "args": []
+  "args": [],
+  "alwaysAllow": [],
+  "disabled": false
 }

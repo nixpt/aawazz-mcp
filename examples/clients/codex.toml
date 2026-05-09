@@ -1,8 +1,15 @@
+# ~/.codex/config.toml — OpenAI Codex CLI MCP server config.
+#
+# Codex auto-detects this file on the next `codex` invocation; no restart needed.
+
 [mcp_servers.aawazz]
 command = "aawazz-mcp"
 args = []
 
-# Optional: for hybrid mode, point at captain's existing FastAPI servers.
+# Optional: hybrid mode — delegate to captain's existing FastAPI services
+# (aawazz-mouth on :7861, aawazz-ears on :7862). `listen` always runs locally.
+# Uncomment the env table below to enable.
+#
 # [mcp_servers.aawazz.env]
 # AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
 # AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"

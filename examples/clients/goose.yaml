@@ -1,3 +1,9 @@
+# ~/.config/goose/config.yaml — Goose MCP extension config (Linux/macOS).
+# On Windows-WSL the path is %APPDATA%\Block\goose\config\config.yaml.
+#
+# Goose uses `cmd` (not `command`) and `envs` (not `env`) — it doesn't speak
+# the standard MCP-runtime config shape. Restart `goose` after editing.
+
 extensions:
   aawazz:
     cmd: aawazz-mcp
@@ -5,7 +11,8 @@ extensions:
     enabled: true
     type: stdio
     timeout: 300
-    # Optional: for hybrid mode.
+    # Optional: hybrid mode — delegate to captain's existing FastAPI services.
+    # `listen` always runs locally (the mic is on this host).
     # envs:
     #   AAWAZZ_MOUTH_URL: http://127.0.0.1:7861/tts
     #   AAWAZZ_EARS_URL: http://127.0.0.1:7862/transcribe

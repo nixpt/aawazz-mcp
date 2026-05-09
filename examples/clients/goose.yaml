@@ -1,0 +1,11 @@
+extensions:
+  aawazz:
+    cmd: aawazz-mcp
+    args: []
+    enabled: true
+    type: stdio
+    timeout: 300
+    # Optional: for hybrid mode.
+    # envs:
+    #   AAWAZZ_MOUTH_URL: http://127.0.0.1:7861/tts
+    #   AAWAZZ_EARS_URL: http://127.0.0.1:7862/transcribe

@@ -1,0 +1,8 @@
+[mcp_servers.aawazz]
+command = "aawazz-mcp"
+args = []
+
+# Optional: for hybrid mode, point at captain's existing FastAPI servers.
+# [mcp_servers.aawazz.env]
+# AAWAZZ_MOUTH_URL = "http://127.0.0.1:7861/tts"
+# AAWAZZ_EARS_URL = "http://127.0.0.1:7862/transcribe"

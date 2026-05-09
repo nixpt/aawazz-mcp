@@ -1,0 +1,10 @@
+modelContextProtocolServers:
+  - name: aawazz
+    type: stdio
+    command: aawazz-mcp
+    # args: []
+
+    # Optional: for hybrid mode against captain's existing FastAPI servers.
+    # env:
+    #   AAWAZZ_MOUTH_URL: http://127.0.0.1:7861/tts
+    #   AAWAZZ_EARS_URL: http://127.0.0.1:7862/transcribe

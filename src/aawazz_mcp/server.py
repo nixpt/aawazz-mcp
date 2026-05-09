@@ -1,0 +1,130 @@
+"""FastMCP server — tool registrations for speak / transcribe / listen / voices_list.
+
+Wave 0: ships :func:`build_server` that returns a FastMCP instance with the four
+tool stubs registered (raise NotImplementedError when called). This pins the
+tool surface so Wave 1A/1B/1C/1D agents have a stable contract.
+
+Wave 2: replaces the stubs with real Dispatcher-backed implementations and adds
+the ``aawazz://health`` resource + lifespan hook.
+"""
+
+from __future__ import annotations
+
+from mcp.server.fastmcp import FastMCP
+
+from aawazz_mcp.config import AawazzConfig
+
+INSTRUCTIONS_MD = """\
+# aawazz — voice for any agent
+
+Local-CPU TTS + STT MCP server. Tools:
+
+- `speak(text, voice="MALE", speed=1.0)` — synthesize speech (tiny-tts).
+- `transcribe(audio_path, language="en", model_arch="tiny_streaming")` — STT on a WAV file.
+- `listen(duration_s=5.0, language="en")` — capture mic for `duration_s` and transcribe.
+- `voices_list()` — voice/language/model catalog + capability probe (no model load).
+
+By default this server bundles its own copies of tiny-tts and Moonshine. If the
+captain's `aawazz-mouth` / `aawazz-ears` FastAPI servers are running, pass
+`--remote http://127.0.0.1:7861,http://127.0.0.1:7862` to delegate.
+"""
+
+
+def build_server(cfg: AawazzConfig) -> FastMCP:
+    """Construct the FastMCP server. Wave 2 wires real Dispatcher; Wave 0 stubs.
+
+    Args:
+        cfg: Resolved configuration (mode=local|remote, transport, warm, etc.).
+
+    Returns:
+        A FastMCP instance with `speak`, `transcribe`, `listen`, `voices_list`
+        tools registered and an `aawazz://health` resource.
+    """
+    mcp = FastMCP("aawazz", instructions=INSTRUCTIONS_MD)
+
+    @mcp.tool()
+    async def speak(  # noqa: D401
+        text: str,
+        voice: str = "MALE",
+        speed: float = 1.0,
+        output_path: str | None = None,
+        play: bool = False,
+    ) -> dict:
+        """Synthesize speech from text via tiny-tts.
+
+        Args:
+            text: 1..4000 characters.
+            voice: Voice id. tiny-tts supports only "MALE" in v1.0.
+            speed: Playback speed, 0.5..2.0.
+            output_path: Absolute path to write the WAV. Default: under
+                ``$AAWAZZ_HOME/mouth/<utc-ts>-<sha8>.wav``.
+            play: If true and a desktop audio player is available
+                (paplay/aplay/afplay), autoplay the output WAV.
+
+        Returns:
+            ``{audio_path, duration_s, sample_rate, latency_ms, voice, speed,
+            text_hash, played, backend}``.
+        """
+        raise NotImplementedError("Wave 2: dispatch.speak(...) via Dispatcher")
+
+    @mcp.tool()
+    async def transcribe(
+        audio_path: str,
+        language: str = "en",
+        model_arch: str = "tiny_streaming",
+    ) -> dict:
+        """Transcribe a WAV file (or http(s) URL) via Moonshine.
+
+        Args:
+            audio_path: Absolute path to a WAV (16/24/32-bit PCM) or http(s) URL.
+                URLs are downloaded to ``$TMPDIR/aawazz-stt-<sha8>.wav`` and
+                unlinked after transcription.
+            language: ISO 639-1 code, e.g. "en".
+            model_arch: One of tiny / tiny_streaming / base / base_streaming /
+                small_streaming / medium_streaming.
+
+        Returns:
+            ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
+            language, audio_path, backend}``.
+        """
+        raise NotImplementedError("Wave 2: dispatch.transcribe(...) via Dispatcher")
+
+    @mcp.tool()
+    async def listen(
+        duration_s: float = 5.0,
+        language: str = "en",
+        model_arch: str = "tiny_streaming",
+        save_audio: bool = False,
+    ) -> dict:
+        """Capture `duration_s` of microphone audio and transcribe.
+
+        Args:
+            duration_s: 0.5..30.0 — hard cap so an agent can't spin forever.
+            language: ISO 639-1 code.
+            model_arch: See :func:`transcribe`.
+            save_audio: If true, return the captured WAV path; otherwise discard.
+
+        Returns:
+            ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
+            language, audio_path, backend}`` (backend always "local").
+
+        Notes:
+            Always runs locally — the mic is on the host running this MCP server.
+            If no input device is available (headless / sandboxed), returns a
+            structured error rather than crashing the server.
+        """
+        raise NotImplementedError("Wave 2: capture → dispatch.transcribe(...) via Dispatcher")
+
+    @mcp.tool()
+    async def voices_list() -> dict:
+        """Return the voice / language / model-arch catalog plus capability probe.
+
+        Does NOT load any models — pure metadata, cheap to call as a health probe.
+
+        Returns:
+            ``{tts: {backend, voices}, stt: {backend, languages, model_archs},
+            capabilities: {listen, play, backend_mode, remote_url}}``.
+        """
+        raise NotImplementedError("Wave 2: synthesize from cfg + sounddevice probe")
+
+    return mcp

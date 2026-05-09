@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aawazz": {
+      "command": "aawazz-mcp",
+      "args": []
+    }
+  }
+}

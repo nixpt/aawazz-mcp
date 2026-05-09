@@ -163,18 +163,46 @@ def _capture_worker(
     worker (terminate / kill) when ``sd.wait`` wedges, which is impossible if
     the recording runs in the parent's thread pool.
 
-    Installs a ``SIGUSR1`` handler that calls ``sd.stop()`` so an external
-    toggle script can gracefully cut the recording — ``sd.wait`` returns
-    immediately, the partial buffer (zero-padded by ``_record_sync``) is
-    written, and the worker exits cleanly. Wrapper scripts find the worker
-    PID via the ``pid_file`` argument to :func:`record_to_wav_hard_timeout`.
+    Installs a ``SIGUSR1`` handler that signals a watchdog thread to call
+    ``sd.stop()`` so an external toggle script can gracefully cut the
+    recording — ``sd.wait`` returns immediately, the partial buffer
+    (zero-padded by ``_record_sync``) is written, and the worker exits
+    cleanly. Wrapper scripts find the worker PID via the ``pid_file``
+    argument to :func:`record_to_wav_hard_timeout`.
+
+    **Race-resilient cut:** the SIGUSR1 handler can fire BEFORE
+    ``_record_sync`` has called ``sd.rec()`` (a real cold-start race seen in
+    s147). A naïve ``sd.stop()`` from the handler is a no-op when no stream
+    exists, so the recording proceeds full duration. The watchdog thread
+    pattern below retries ``sd.stop()`` for ~2s after the event fires,
+    catching the stream as soon as ``sd.rec()`` activates it.
     """
     import signal as _signal
+    import threading
+
+    _stop_event = threading.Event()
 
     def _stop_handler(_signum, _frame):
+        # Signal handlers must do as little as possible — just flip the event.
+        # The watchdog thread does the actual sd.stop() work, with retries to
+        # handle the cold-start race.
+        _stop_event.set()
+
+    def _stop_watcher():
+        # Wait for the stop signal, then hammer sd.stop() at 50ms intervals
+        # for up to 2s. sd.stop() is idempotent (no-op on no stream); the
+        # retries catch the moment when sd.rec() activates the stream after
+        # an early-arriving signal.
+        _stop_event.wait()
         try:
-            import sounddevice as _sd  # already imported below; cheap on cache
-            _sd.stop()
+            import sounddevice as _sd  # noqa: PLC0415
+            import time as _time  # noqa: PLC0415
+            for _ in range(40):
+                try:
+                    _sd.stop(ignore_errors=True)
+                except Exception:
+                    pass
+                _time.sleep(0.05)
         except Exception:
             pass
 
@@ -182,6 +210,8 @@ def _capture_worker(
         _signal.signal(_signal.SIGUSR1, _stop_handler)
     except Exception:
         pass  # platform without SIGUSR1 (Windows) — fall through, no toggle support
+
+    threading.Thread(target=_stop_watcher, daemon=True).start()
 
     try:
         result = asyncio.run(record_to_wav(duration_s=duration_s, output_path=output_path))

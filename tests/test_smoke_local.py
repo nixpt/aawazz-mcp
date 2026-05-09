@@ -63,10 +63,12 @@ def test_speak_then_transcribe_roundtrip(
 
 @pytest.mark.slow
 def test_local_backend_speak_validates_voice(tmp_aawazz_home: Path) -> None:
-    """LocalBackend should reject non-MALE voices with a structured error."""
+    """LocalBackend should reject unknown voices with a structured error
+    listing all valid voice IDs (MALE + DSP profiles)."""
     # Construct a minimal config substitute. We only touch fields LocalBackend
     # uses for ``speak`` — output_dir + default lang/arch — so we sidestep the
     # AawazzConfig URL-resolution path that this test doesn't exercise.
+    from aawazz_mcp.audio.dsp import VOICE_PROFILES
     from aawazz_mcp.backends.local import LocalBackend
 
     class _FakeCfg:
@@ -82,5 +84,5 @@ def test_local_backend_speak_validates_voice(tmp_aawazz_home: Path) -> None:
     result = asyncio.run(_run())
     assert "error" in result
     assert result["backend"] == "local"
-    assert result["available_voices"] == ["MALE"]
+    assert set(result["available_voices"]) == set(VOICE_PROFILES)
     assert result["requested_voice"] == "FEMALE"

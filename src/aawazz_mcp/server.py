@@ -205,11 +205,14 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         max_tokens: int = 256,
         temperature: float = 0.7,
         timeout_s: float = 30.0,
+        lang_mismatch: str = "route",
     ) -> dict:
         """Generate text via the routed LLM provider, then synthesize and
         optionally play it. v1.4 phase 2 — ``stream=True`` pipes LLM tokens
         through the sentence chunker into ``synthesize_stream`` so audio
-        starts playing while the LLM is still generating.
+        starts playing while the LLM is still generating. v1.4 phase 3 —
+        ``lang_mismatch`` policy detects the LLM output language and
+        re-routes TTS when it differs from ``language``.
 
         Args:
             prompt: One-shot user message. Mutually exclusive with ``messages``.
@@ -249,6 +252,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             max_tokens=max_tokens,
             temperature=temperature,
             timeout_s=timeout_s,
+            lang_mismatch=lang_mismatch,
         )
 
     @mcp.tool()

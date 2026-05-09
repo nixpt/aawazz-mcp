@@ -704,6 +704,7 @@ class LocalBackend(Backend):
         max_tokens: int = 256,
         temperature: float = 0.7,
         timeout_s: float = 30.0,
+        lang_mismatch: str = "route",
     ) -> dict:
         """v1.4 LLM-bridge: generate text via the routed LLM provider, then
         synthesize via the existing speak path. See SPEC_v1.4 §6.
@@ -788,6 +789,57 @@ class LocalBackend(Backend):
                 finish_reason=llm_result.finish_reason,
             )
 
+        # ── Phase 3: language-mismatch detection ────────────────────────────
+        # Detect language of the LLM output BEFORE TTS. If detected != request
+        # language, apply the lang_mismatch policy. Default ``"route"`` finds
+        # a TTS provider that DOES speak the detected language; ``"warn"``
+        # synthesizes anyway but tags the response; ``"error"`` hard-fails;
+        # ``"off"`` skips detection entirely.
+        from aawazz_mcp.audio.lang_detect import detect_language  # noqa: PLC0415
+
+        language_mismatch: dict | None = None
+        effective_language = language
+        effective_tts_provider = tts_provider
+
+        if lang_mismatch != "off":
+            detected = detect_language(llm_result.text)
+            if detected and detected != language:
+                language_mismatch = {
+                    "requested": language,
+                    "detected": detected,
+                }
+                if lang_mismatch == "error":
+                    return _err(
+                        f"language mismatch: requested {language!r} but LLM "
+                        f"emitted {detected!r}",
+                        hint=(
+                            "set lang_mismatch='route' to auto-route the TTS, "
+                            "'warn' to synthesize anyway, or 'off' to skip detection"
+                        ),
+                        language_mismatch=language_mismatch,
+                        text=llm_result.text,
+                    )
+                if lang_mismatch == "route" and not tts_provider:
+                    # Try to find a TTS provider that supports detected lang.
+                    # If none does, fall through to warn-style behavior.
+                    try:
+                        rerouted = self._router.resolve_tts(detected)
+                    except ProviderError:
+                        log.info(
+                            "lang_mismatch=route: no TTS provider supports "
+                            "detected %r; falling through to warn",
+                            detected,
+                        )
+                    else:
+                        effective_tts_provider = rerouted.name
+                        effective_language = detected
+                        log.info(
+                            "lang_mismatch=route: detected %r → "
+                            "rerouting TTS to %r",
+                            detected,
+                            rerouted.name,
+                        )
+
         # TTS via existing speak path. Carries DSP / post_process / playback
         # behavior verbatim — no special-casing for respond.
         speak_result = await self.speak(
@@ -796,8 +848,8 @@ class LocalBackend(Backend):
             speed=float(speed),
             output_path=output_path,
             play=play,
-            language=language,
-            tts_provider=tts_provider,
+            language=effective_language,
+            tts_provider=effective_tts_provider,
             post_process=post_process,
         )
 
@@ -833,7 +885,12 @@ class LocalBackend(Backend):
             "completion_tokens": llm_result.completion_tokens,
             "finish_reason": llm_result.finish_reason,
             "post_process_chain": speak_result.get("post_process_chain", []),
-            "language_detected": llm_result.language_detected,
+            "language_detected": (
+                language_mismatch["detected"]
+                if language_mismatch
+                else llm_result.language_detected
+            ),
+            "language_mismatch": language_mismatch,
             "backend": "local",
         }
 

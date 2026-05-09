@@ -75,6 +75,12 @@ xtts = [
 vad = [
     "webrtcvad-wheels>=2.0.14",
 ]
+# Optional: Language detection for v1.4 respond() lang_mismatch policy.
+# lingua-py is more accurate on short text than the older langdetect package
+# (LLM streaming chunks are often <50 chars). Pure-Python, ~5 ms / chunk.
+langdetect = [
+    "lingua-language-detector>=2.0",
+]
 
 [project.scripts]
 aawazz-mcp = "aawazz_mcp.cli:main"

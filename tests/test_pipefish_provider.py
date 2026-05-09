@@ -40,15 +40,15 @@ def test_capabilities_unreachable_when_pipefish_offline(monkeypatch) -> None:
 
 
 def test_capabilities_available_when_pipefish_responds(monkeypatch) -> None:
-    """Mocked /v1/models response → available=True, backend_models populated."""
+    """Mocked /api/tags (Ollama-compat) → available=True, backend_models populated."""
     from aawazz_mcp.providers.pipefish import PipefishLlmProvider
 
     fake = MagicMock()
     fake.json.return_value = {
-        "data": [
-            {"id": "qwen3"},
-            {"id": "ollama:llama3"},
-            {"id": "ravan:zpu"},
+        "models": [
+            {"name": "qwen3"},
+            {"name": "ollama:llama3"},
+            {"name": "ravan:zpu"},
         ],
     }
     fake.raise_for_status.return_value = None
@@ -69,7 +69,7 @@ def test_capabilities_caches_within_ttl(monkeypatch) -> None:
     from aawazz_mcp.providers.pipefish import PipefishLlmProvider
 
     fake = MagicMock()
-    fake.json.return_value = {"data": [{"id": "qwen3"}]}
+    fake.json.return_value = {"models": [{"name": "qwen3"}]}
     fake.raise_for_status.return_value = None
     call_count = {"n": 0}
 
@@ -88,31 +88,29 @@ def test_capabilities_caches_within_ttl(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_complete_happy_path(monkeypatch) -> None:
-    """Mocked /v1/chat/completions → LlmResult populated correctly."""
+    """Mocked /api/chat (Ollama-compat) → LlmResult populated correctly."""
     from aawazz_mcp.providers.pipefish import PipefishLlmProvider
 
     # Make capabilities probe succeed.
     probe = MagicMock()
-    probe.json.return_value = {"data": [{"id": "qwen3"}]}
+    probe.json.return_value = {"models": [{"name": "qwen3"}]}
     probe.raise_for_status.return_value = None
     monkeypatch.setattr("httpx.get", lambda *a, **kw: probe)
 
-    # Mock the chat/completions POST.
+    # Mock /api/chat POST. Ollama shape: top-level message + done +
+    # prompt_eval_count + eval_count.
     chat_resp = MagicMock()
     chat_resp.json.return_value = {
-        "id": "cmpl-1",
         "model": "qwen3",
-        "choices": [
-            {
-                "message": {"role": "assistant", "content": "Hello, captain."},
-                "finish_reason": "stop",
-            },
-        ],
-        "usage": {
-            "prompt_tokens": 12,
-            "completion_tokens": 4,
-            "total_tokens": 16,
-        },
+        "created_at": "2026-05-09T22:00:00Z",
+        "message": {"role": "assistant", "content": "Hello, captain."},
+        "done": True,
+        "total_duration": 1_234_567,
+        "load_duration": 0,
+        "prompt_eval_count": 12,
+        "prompt_eval_duration": 0,
+        "eval_count": 4,
+        "eval_duration": 0,
     }
     chat_resp.raise_for_status.return_value = None
 
@@ -127,6 +125,7 @@ async def test_complete_happy_path(monkeypatch) -> None:
         LlmRequest(
             messages=({"role": "user", "content": "hi"},),
             system_prompt="be terse",
+            model="qwen3",
         )
     )
 
@@ -145,7 +144,7 @@ async def test_complete_pipefish_5xx_raises_provider_error(monkeypatch) -> None:
     import httpx
 
     probe = MagicMock()
-    probe.json.return_value = {"data": [{"id": "x"}]}
+    probe.json.return_value = {"models": [{"name": "x"}]}
     probe.raise_for_status.return_value = None
     monkeypatch.setattr("httpx.get", lambda *a, **kw: probe)
 

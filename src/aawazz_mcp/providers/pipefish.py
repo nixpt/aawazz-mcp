@@ -2,19 +2,22 @@
 
 Phase 1 of v1.4 (SPEC §3). Single concrete :class:`LlmProvider` for
 v1.4.0. Talks to the captain's pipefish HTTP server (default
-``http://127.0.0.1:11450/v1``) via OpenAI-compat ``/v1/chat/completions``.
-All backend routing — Local llama.cpp-FFI, Ollama, Gemini, Ravan,
-LlamaCppBackend — happens upstream inside pipefish per the captain's
-seahorse-first directive (memory ``seahorse_pipefish_canonical``).
+``http://127.0.0.1:11450``) via the **Ollama-compatible** API surface
+that pipefish actually exposes (``/api/tags``, ``/api/chat``,
+``/api/generate``) — NOT the OpenAI ``/v1/*`` paths. Pipefish proxies
+upstream backends (Local llama.cpp-FFI, Ollama on :11434, Gemini,
+Ravan/rama-zpu, LlamaCppBackend) per the captain's seahorse-first
+directive (memory ``seahorse_pipefish_canonical``).
 
 Reachability semantics
 ----------------------
-``capabilities()`` does a one-shot ``GET /v1/models`` with a 1 s timeout
+``capabilities()`` does a one-shot ``GET /api/tags`` with a 1 s timeout
 on first call. Result caches for 30 s; subsequent calls re-probe lazily.
 
 * Success → ``available=True``, ``backend_models=(...)`` from the response.
-* ConnectionRefused / DNS / 5xx → ``available=False``, ``backend_models=()``;
-  the router skips us so ``respond`` errors cleanly instead of hanging.
+* ConnectionRefused / DNS / 4xx / 5xx → ``available=False``,
+  ``backend_models=()``; the router skips us so ``respond`` errors cleanly
+  instead of hanging.
 
 Streaming arrives in v1.4 phase 2; phase 1 ``stream()`` raises
 :class:`ProviderError`.
@@ -38,7 +41,7 @@ from aawazz_mcp.registry import register_llm
 log = logging.getLogger("aawazz_mcp.providers.pipefish")
 
 
-_DEFAULT_URL = "http://127.0.0.1:11450/v1"
+_DEFAULT_URL = "http://127.0.0.1:11450"
 _REACHABILITY_CACHE_TTL_S = 30.0
 _REACHABILITY_PROBE_TIMEOUT_S = 1.0
 
@@ -109,7 +112,7 @@ class PipefishLlmProvider:
         """One-shot synchronous reachability probe. Results cached by caller."""
         import httpx  # noqa: PLC0415
 
-        url = f"{self._base_url}/models"
+        url = f"{self._base_url}/api/tags"
         headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
         try:
             resp = httpx.get(
@@ -131,12 +134,12 @@ class PipefishLlmProvider:
                 ),
             )
 
-        # OpenAI-compat ``/v1/models`` response: {"data": [{"id": ...}, ...]}
+        # Ollama-compat ``/api/tags`` response: {"models": [{"name": ...}, ...]}
         models: list[str] = []
-        if isinstance(doc, dict) and isinstance(doc.get("data"), list):
-            for entry in doc["data"]:
-                if isinstance(entry, dict) and "id" in entry:
-                    models.append(str(entry["id"]))
+        if isinstance(doc, dict) and isinstance(doc.get("models"), list):
+            for entry in doc["models"]:
+                if isinstance(entry, dict) and "name" in entry:
+                    models.append(str(entry["name"]))
 
         return LlmCapabilities(
             available=True,
@@ -171,16 +174,29 @@ class PipefishLlmProvider:
         }
         if request.stop:
             body["stop"] = list(request.stop)
-        model = request.model or self._default_model
-        if model:
-            body["model"] = model
+        # Pipefish (Ollama-compat) requires ``model`` in every request.
+        # Default to the first known model if the caller didn't specify.
+        caps = self.capabilities()
+        model = (
+            request.model
+            or self._default_model
+            or (caps.backend_models[0] if caps.backend_models else None)
+        )
+        if model is None:
+            msg = (
+                "pipefish requires a model name. Set AAWAZZ_PIPEFISH_MODEL, "
+                "pass llm_model= per call, or ensure /api/tags reports at "
+                "least one model."
+            )
+            raise ProviderError(msg)
+        body["model"] = model
 
         # Provider-specific kwargs (e.g. extra={"headers": ...}).
         extra_headers = (request.extra or {}).get("headers") or {}
 
         import httpx  # noqa: PLC0415
 
-        url = f"{self._base_url}/chat/completions"
+        url = f"{self._base_url}/api/chat"
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
@@ -229,31 +245,37 @@ def _has_system_role(messages: list[dict[str, str]]) -> bool:
 
 
 def _parse_chat_response(doc: Any, latency_ms: int) -> LlmResult:
-    """Parse an OpenAI-compat ``chat/completions`` response into LlmResult."""
+    """Parse an Ollama-compat ``/api/chat`` response into :class:`LlmResult`.
+
+    Shape::
+
+        {
+          "model": "...",
+          "message": {"role": "assistant", "content": "..."},
+          "done": true,
+          "prompt_eval_count": <int>,
+          "eval_count": <int>,
+          "total_duration": <ns>, ...
+        }
+    """
     if not isinstance(doc, dict):
         msg = f"pipefish returned non-dict response: {type(doc).__name__}"
         raise ProviderError(msg)
 
-    choices = doc.get("choices")
-    if not isinstance(choices, list) or not choices:
-        msg = "pipefish response missing 'choices'"
+    message = doc.get("message")
+    if not isinstance(message, dict):
+        msg = (
+            f"pipefish response missing 'message' object; got keys "
+            f"{list(doc.keys()) if isinstance(doc, dict) else type(doc).__name__}"
+        )
         raise ProviderError(msg)
 
-    first = choices[0]
-    if not isinstance(first, dict):
-        msg = "pipefish response 'choices[0]' is not an object"
-        raise ProviderError(msg)
+    text = (message.get("content") or "").strip()
+    done = bool(doc.get("done"))
+    finish_reason = "stop" if done else "length"
 
-    message = first.get("message") or {}
-    text = (message.get("content") or "").strip() if isinstance(message, dict) else ""
-    finish_reason = str(first.get("finish_reason") or "stop")
-
-    usage = doc.get("usage") or {}
-    prompt_tokens = int(usage.get("prompt_tokens") or 0) if isinstance(usage, dict) else 0
-    completion_tokens = (
-        int(usage.get("completion_tokens") or 0) if isinstance(usage, dict) else 0
-    )
-
+    prompt_tokens = int(doc.get("prompt_eval_count") or 0)
+    completion_tokens = int(doc.get("eval_count") or 0)
     model = str(doc.get("model") or "")
 
     return LlmResult(

@@ -1,35 +1,42 @@
 # aawazz-mcp assets
 
-Branding artifacts go here. Populated interactively — drop generated files in.
+Brand artifacts for the project. All MIT-licensed alongside the rest of the repo.
 
-## Drop-in slots
+## What's here
 
-| File | Purpose | Reference in repo |
+| File | Purpose | Used in |
 |---|---|---|
-| `logo.svg` | Primary logo, vector. Used in README header. | [`README.md`](../README.md) |
-| `logo.png` | Raster fallback (1024×1024) for places that don't render SVG (PyPI, some Markdown renderers). | [`README.md`](../README.md), eventual PyPI listing |
-| `logo-dark.svg` | Optional dark-mode variant. GitHub renders the right one based on viewer theme via `<picture>` tags. | optional |
-| `social-card.png` | 1280×640 OpenGraph / Twitter card for the GitHub repo "social preview" setting. | repo settings → Options → Social preview |
-| `icon.png` | 256×256 favicon-style square; useful for client config UIs that show an icon next to the server entry. | optional |
+| `banner.png` | Wide-format brand mark — mic icon + "aawazz / TTS · STT · MCP / आवाज़ / voice for every agent runtime". | [`README.md`](../README.md) header |
+| `logo.png` | Square primary logo — mic + radial sound waves + "aawazz / आवाज़ / mcp" stack. | PyPI listing (when v1.1 publishes), GitHub social card candidate |
+| `icon.png` | Rounded-square app-icon style — bidirectional sound waves (mouth + ears symmetry). | Client-config UIs that show an icon next to the server entry, favicon source |
 
-## Suggested prompt for image-gen
+All three are 1024×1024, JPEG-encoded inside `.png` containers. Re-export to true PNG (or SVG) if a downstream consumer requires it.
 
-> A minimalist logo for "aawazz" — Hindi/Urdu/Nepali word आवाज़ meaning *voice / sound*. Two paired motifs: an open mouth on the left and a listening ear on the right, connected by a sound wave. Flat geometric style, single accent color (suggested: warm coral or ochre — references the South Asian script tradition without being literal). Square 1024×1024 frame, clean negative space, looks good as both a 32×32 favicon and a 256×256 client-config icon. Avoid: realistic faces, microphone clipart, generic speech bubbles.
+## Color palette
 
-Tweak as you iterate. The Devanagari glyph **आवाज़** itself is a strong design element — a calligraphic treatment may work better than an illustrated mouth/ear pair. Worth trying both directions.
+- Background: deep navy / black (`#0a0b1f` ish)
+- Primary accent: cyan-to-purple gradient (`#3ecde6` → `#8a5cf6`)
+- Devanagari script accent: pink/magenta (`#e36ad9` ish)
+- Wordmark: white
 
-## Once dropped
+## Reuse
 
-Update `README.md` to reference the logo at the top of the elevator section:
+Embed in markdown:
 
 ```markdown
 <p align="center">
-  <img src="assets/logo.svg" width="160" alt="aawazz logo">
+  <img src="assets/banner.png" alt="aawazz-mcp banner" width="100%">
 </p>
 ```
 
-And set `social-card.png` via the repo's *Settings → General → Social preview* upload.
+Or for a tighter logo-only header:
+
+```markdown
+<p align="center">
+  <img src="assets/logo.png" alt="aawazz logo" width="200">
+</p>
+```
 
 ## License
 
-Whatever you generate / commission belongs under the same MIT license as the rest of the repo unless you note otherwise inline.
+MIT — same as the rest of the repo. Generated/commissioned art is dedicated under the same terms unless noted otherwise inline.

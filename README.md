@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="aawazz-mcp banner" width="100%">
+</p>
+
 # aawazz-mcp
 
 > **आवाज़** — Hindi/Urdu/Nepali for *voice / sound*.

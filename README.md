@@ -6,7 +6,7 @@
 
 > **आवाज़** — Hindi/Urdu/Nepali for *voice / sound*.
 
-A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks the Model Context Protocol — Claude Code, Claude Desktop, Codex, Cursor, Zed, Cline, Continue, Goose, Gemini CLI. One `pip install` and four tools (`speak`, `transcribe`, `listen`, `voices_list`) light up across every runtime simultaneously. Bundles [tiny-tts](https://github.com/backtracking/tiny-tts) (~3.4 MB ONNX) and [Useful Sensors / Moonshine](https://github.com/usefulsensors/moonshine) (~80 MB ONNX) so it runs offline once weights are cached; an optional `--remote` mode delegates to a separately-running FastAPI mouth/ears so model load doesn't double up on machines that already have those services.
+A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks the Model Context Protocol — Claude Code, Claude Desktop, Codex, Cursor, Zed, Cline, Continue, Goose, Gemini CLI. One `pip install` and four tools (`speak`, `transcribe`, `listen`, `voices_list`) light up across every runtime simultaneously. Bundles [tiny-tts](https://github.com/backtracking/tiny-tts) (~3.4 MB ONNX) and [Useful Sensors / Moonshine](https://github.com/usefulsensors/moonshine) (~80 MB ONNX) so it runs offline once weights are cached. **v1.3 adds a pluggable backend layer** so you can swap in [Piper](https://github.com/rhasspy/piper), [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), [Coqui XTTS-v2](https://huggingface.co/coqui/XTTS-v2), and post-processors (DSP profiles, VAD, gain) without forking. An optional `--remote` mode delegates to a separately-running FastAPI mouth/ears so model load doesn't double up on machines that already have those services.
 
 ---
 
@@ -14,10 +14,10 @@ A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks
 
 | | |
 |---|---|
-| **Version** | v1.0 (first release) |
+| **Version** | v1.3 (pluggable backends; default routing matches v1.2) |
 | **OS** | Linux, macOS — Moonshine ships only `.so` and `.dylib` |
-| **Python** | 3.10, 3.11, 3.12 |
-| **Distribution** | `pip install git+...` (PyPI release queued for v1.1) |
+| **Python** | 3.10–3.14 |
+| **Distribution** | `pip install git+...` (PyPI release queued) |
 | **Transport** | stdio default; opt-in `streamable-http` |
 
 **Windows users**: install [WSL2](https://learn.microsoft.com/windows/wsl/install) and follow the Linux instructions inside it. Native Windows support is gated on Moonshine shipping `.dll` artifacts — see [usefulsensors/moonshine#TBD](https://github.com/usefulsensors/moonshine).
@@ -30,7 +30,7 @@ A portable, local-CPU **TTS + STT MCP server** for any agent runtime that speaks
 pip install git+https://github.com/nixpt/aawazz-mcp.git
 ```
 
-That's it. The `aawazz-mcp` console script lands on your `PATH`. PyPI publication is queued for v1.1; until then the git URL is the canonical install path.
+That's it. The `aawazz-mcp` console script lands on your `PATH`. PyPI publication is queued; until then the git URL is the canonical install path.
 
 ---
 
@@ -328,7 +328,7 @@ In an MCP-runtime config, drop the env table into the server entry — see the c
 }
 ```
 
-Silent fallback would mask misconfig; you explicitly opted into remote. v1.1 may add `--remote-fallback=local` if there's demand.
+Silent fallback would mask misconfig; you explicitly opted into remote. A future `--remote-fallback=local` flag is on the table if there's demand.
 
 ---
 
@@ -427,37 +427,90 @@ add `--remote` to delegate to an `aawazz-ears` FastAPI service.
 
 ---
 
-## Voice profiles & multilingual
+## Pluggable providers (v1.3)
 
-English speak/listen/transcribe work out of the box with the base install. Two opt-in extensions broaden the surface:
+The audio pipeline has five swappable stages — TTS, STT, post-processors, mic capture, playback. The base install ships with sensible defaults that match v1.2 behavior exactly; opt-in extras add more providers and the routing layer picks between them.
 
-### Voice profiles (DSP, no extra deps)
+### TTS providers
 
-`speak(voice=...)` accepts seven post-processing profiles applied to the tiny-tts output. Pure numpy, zero new dependencies.
+| Name | Languages | Voices | Install | Notes |
+|------|-----------|--------|---------|-------|
+| `tiny-tts` | en | 1 (`MALE`) | bundled | ~3.4 MB ONNX, default for English |
+| `gtts` | 69 | 1 per lang | `[multilingual]` | Google Translate TTS, requires internet |
+| `piper` | 44 | hundreds | `[piper]` | ~100 MB ONNX/voice, voices auto-download from rhasspy/piper-voices |
+| `kokoro` | 8 | 54 | `[kokoro]` | ~330 MB model + 25 MB voices.bin, no torch dep |
+| `xtts` | 17 | voice cloning | `[xtts]` | Coqui XTTS-v2, ~2 GB, clone voice from a 3–30 s reference WAV |
 
-| Profile  | Effect                                                |
-| -------- | ----------------------------------------------------- |
-| `MALE`   | Default tiny-tts, no post-processing                  |
-| `DEEP`   | Lower pitch + warm lowpass                            |
-| `BRIGHT` | Higher pitch + airy highpass                          |
-| `SOFT`   | Smoothed lowpass at 3 kHz                             |
-| `GRAVEL` | Soft saturation + slight pitch-down                   |
-| `ROBOT`  | Rectify + bandpass — classic vocoder feel             |
-| `ECHO`   | Single echo tap at 300 ms, 40% decay                  |
-| `WIDE`   | Pitch-up + Schroeder reverb tail                      |
+### STT providers
 
-### Multilingual (optional extras)
+| Name | Languages | Install | Notes |
+|------|-----------|---------|-------|
+| `moonshine` | en, es, zh, ja, ko, ar, vi, uk | bundled | default; ONNX, ~80 MB |
+| `whisper` | ne | `[multilingual]` | HF transformers; model auto-downloads on first call |
 
-```bash
-pip install "aawazz-mcp[multilingual]"
+### Post-processors
+
+`speak(post_process=[...])` runs effects on synthesized audio. `transcribe`/`listen(pre_process=[...])` runs effects on STT input.
+
+| Name | Direction | Install | Effect |
+|------|-----------|---------|--------|
+| `dsp:DEEP` / `BRIGHT` / `SOFT` / `GRAVEL` / `ROBOT` / `ECHO` / `WIDE` | tts | bundled | 7 numpy DSP voice profiles applied to any TTS output (provider must opt in via `accepts_dsp_profiles`) |
+| `gain:auto` | both | bundled | Peak-normalize to −0.5 dBFS |
+| `vad:webrtc` | both | `[vad]` | Silence trim front + back; cuts STT latency on quiet inputs |
+
+### Routing chain
+
+Resolution order, highest first:
+
+1. **Per-call** `tts_provider=…` / `stt_provider=…` on the tool call (hard-fails if missing or language-incompatible — no silent fallback).
+2. **CLI** `--tts-default <name>` / `--stt-default <name>` — replaces the `default` chain only.
+3. **Env** `AAWAZZ_TTS_PROVIDER` / `AAWAZZ_STT_PROVIDER` — same shape as CLI.
+4. **Config file** `~/.config/aawazz/aawazz.toml` (or `$AAWAZZ_ROUTING_FILE`).
+5. **Built-in default** — `en → tiny-tts`, `default → gtts`, `ne → whisper`, `default → moonshine`.
+
+Example config:
+
+```toml
+[tts.routing]
+en      = ["piper", "tiny-tts"]
+es      = ["piper", "gtts"]
+ne      = ["xtts", "gtts"]
+default = ["gtts"]
+
+[stt.routing]
+en      = ["moonshine"]
+ne      = ["whisper"]
+default = ["moonshine"]
 ```
 
-This pulls `gtts`, `transformers`, and `torch`. With them installed:
+A chain fails over to the next entry when a provider is unregistered or doesn't support the requested language; the override path (per-call) hard-fails instead.
 
-- **`speak(language=...)`** — non-English languages route through gTTS (Google TTS, requires internet). English continues to use tiny-tts + DSP profiles.
-- **`transcribe(language=...)`** / **`listen(language=...)`** — Moonshine covers `en, es, zh, ja, ko, ar, vi, uk`; Nepali (`ne`) routes through a Whisper-Small model (`amitpant7/Nepali-Automatic-Speech-Recognition`) downloaded on first use.
+### Voice IDs
 
-Without the extras, calling `speak` with a non-English language returns a structured error, and `transcribe`/`listen` with `ne` raises `ImportError` for `transformers`.
+Voice IDs are namespaced as `<provider>:<voice>`:
+
+```
+tiny-tts:MALE
+piper:en_US-amy-medium
+piper:en_GB-jenny-medium
+kokoro:af_bella
+kokoro:zf_xiaoxiao
+xtts:cloned-from-/abs/path/to/reference.wav
+```
+
+Legacy unprefixed `voice="DEEP"` / `voice="MALE"` still works — DSP names auto-rewrite to `voice="MALE"` + `post_process=["dsp:DEEP"]`.
+
+### Optional extras at a glance
+
+```bash
+pip install "aawazz-mcp[multilingual]"   # gtts + Whisper STT (transformers, torch)
+pip install "aawazz-mcp[piper]"          # piper-tts (Rhasspy)
+pip install "aawazz-mcp[kokoro]"         # kokoro-onnx (Kokoro-82M)
+pip install "aawazz-mcp[xtts]"           # coqui-tts (XTTS-v2 voice cloning)
+pip install "aawazz-mcp[vad]"            # webrtcvad-wheels (silence trim)
+```
+
+Each extra is independent — install only what you need. `voices_list()` reflects what's currently registered.
 
 ---
 
@@ -465,53 +518,79 @@ Without the extras, calling `speak` with a non-English language returns a struct
 
 Four tools and one resource. Tool docstrings become MCP tool descriptions verbatim — what your agent sees in `tools/list` mirrors the contracts below.
 
-### `speak(text, voice="MALE", speed=1.0, output_path=None, play=False)`
+### `speak(text, voice="MALE", speed=1.0, output_path=None, play=False, language="en", tts_provider=None, post_process=None, playback_provider=None)`
 
-Render text to speech and write a `.wav`. Returns `{audio_path, duration_s, sample_rate, latency_ms, voice, speed, text_hash, played, backend}`.
+Render text to speech and write a `.wav`. Returns `{audio_path, duration_s, sample_rate, latency_ms, voice, speed, text_hash, played, backend, provider, post_process_chain}`.
 
 - `text` — required, 1–4000 chars.
-- `voice` — tiny-tts ships only `"MALE"`. Anything else returns a structured error with `available_voices: ["MALE"]`.
-- `speed` — 0.5–2.0 multiplier.
+- `voice` — provider-specific ID (e.g. `"piper:en_US-amy-medium"`). Legacy unprefixed DSP names (`"DEEP"`, `"BRIGHT"`, …) auto-rewrite to `voice="MALE"` + `post_process=["dsp:<NAME>"]`.
+- `speed` — 0.5–2.0 multiplier (provider must support it; XTTS is fixed-speed).
 - `output_path` — absolute path; default `~/.local/share/aawazz/mouth/<ts>-<hash>.wav`.
-- `play` — autoplay via `paplay` / `aplay` / `afplay` if any are on `PATH`.
+- `play` — autoplay via the registered playback provider (default: `paplay` / `aplay` / `afplay` on `PATH`).
+- `language` — ISO 639-1 code routes the chain (default `"en"`).
+- `tts_provider` — override the chain (hard-fails if missing or language-incompatible). See [Pluggable providers](#pluggable-providers-v13).
+- `post_process` — ordered list of post-processor names (`["dsp:DEEP", "gain:auto"]`).
+- `playback_provider` — override the playback provider (default `"shell"`).
 
 Example (mcp-inspector):
 ```
-speak({"text": "Hello world", "voice": "MALE", "play": true})
+speak({"text": "Hello world", "play": true})
+speak({"text": "Hola mundo", "language": "es"})
+speak({"text": "Hi there", "tts_provider": "piper", "voice": "piper:en_US-amy-medium"})
+speak({"text": "Robot voice", "post_process": ["dsp:ROBOT", "gain:auto"]})
 ```
 
-### `transcribe(audio_path, language="en", model_arch="tiny_streaming")`
+### `transcribe(audio_path, language="en", model_arch="tiny_streaming", stt_provider=None, pre_process=None)`
 
-Transcribe a WAV file (local path or `http(s)://` URL). Returns `{text, audio_duration_s, sample_rate, latency_ms, model_arch, language, audio_path, backend}`.
+Transcribe a WAV file (local path or `http(s)://` URL). Returns `{text, audio_duration_s, sample_rate, latency_ms, model_arch, language, audio_path, backend, provider, pre_process_chain}`.
 
 - `audio_path` — absolute path or `http(s)://` URL. URL inputs are downloaded to `${TMPDIR}/aawazz-stt-<sha8>.wav` and unlinked after.
-- `model_arch` — `tiny | tiny_streaming | base | base_streaming | small_streaming | medium_streaming`. Default `tiny_streaming` is the recommended balance of speed/accuracy for English on CPU.
+- `model_arch` — Moonshine arch (`tiny | tiny_streaming | base | base_streaming | small_streaming | medium_streaming`). Ignored when the resolved provider isn't Moonshine.
+- `stt_provider` — override the chain.
+- `pre_process` — ordered list of post-processors with `direction="stt"` or `"both"` (e.g. `["vad:webrtc"]`). The original `audio_path` is never modified — pre-processing runs on a tempfile copy.
 
 Example:
 ```
 transcribe({"audio_path": "/tmp/note.wav", "language": "en"})
+transcribe({"audio_path": "/tmp/quiet.wav", "pre_process": ["vad:webrtc"]})
 ```
 
-### `listen(duration_s=5.0, language="en", model_arch="tiny_streaming", save_audio=False)`
+### `listen(duration_s=5.0, language="en", model_arch="tiny_streaming", save_audio=False, stt_provider=None, pre_process=None, capture_provider=None)`
 
 Bounded mic capture, then transcribe. Returns same shape as `transcribe` plus `audio_path: str | None` (only set when `save_audio=true`). `backend` is always `"local"`.
 
 - `duration_s` — 0.5–30.0 hard cap.
-- `save_audio` — keep the captured WAV at `~/.local/share/aawazz/ears/<ts>.wav`.
+- `save_audio` — keep the captured WAV at `~/.local/share/aawazz/ears/<ts>.wav`. When `true` and `pre_process` is set, the saved WAV reflects the pre-processed audio.
+- `capture_provider` — override the capture provider (default `"sounddevice"`).
+- `pre_process` — see `transcribe` above.
 
 Example:
 ```
 listen({"duration_s": 4.0, "save_audio": true})
+listen({"duration_s": 10.0, "pre_process": ["vad:webrtc"]})
 ```
 
 ### `voices_list()`
 
-Cheap probe — does **not** load models. Returns `{tts: {backend, voices}, stt: {backend, languages, model_archs}, capabilities: {listen, play, backend_mode, remote_url}}`. Use it to discover whether `listen` will work on the current host (mic-less / sandboxed runtimes report `capabilities.listen: false`).
+Cheap probe — does **not** load models. v1.3 response shape:
 
-Example:
+```jsonc
+{
+  "providers": {
+    "tts": [{"name": "tiny-tts", "version": "0.3.2", "languages": ["en"], "voices": [...], "accepts_dsp_profiles": true, ...}, ...],
+    "stt": [{"name": "moonshine", "languages": ["en", "es", ...], "model_archs": {...}}, ...],
+    "post_processors": [{"name": "dsp:DEEP", "direction": "tts"}, ...],
+    "capture": [{"name": "sounddevice", "has_input_device": true}],
+    "playback": [{"name": "shell", "has_player": true}]
+  },
+  "routing": {"tts": {"en": ["tiny-tts"], "default": ["gtts"]}, "stt": {...}},
+  "capabilities": {"listen": true, "play": true, "backend_mode": "local", ...},
+  "tts": {...},  // v1.0/v1.2 alias view (preserved until v2.0)
+  "stt": {...}
+}
 ```
-voices_list()
-```
+
+Use it to discover what providers / voices / post-processors are available, what the resolved routing chain is, and whether `listen` will work on the current host.
 
 ### Resource: `aawazz://health`
 
@@ -525,9 +604,9 @@ Full contract: [`SPEC.md` §1](SPEC.md).
 
 - **Linux + macOS only.** Moonshine ships only `libmoonshine.so` and `libonnxruntime.*.dylib`; native Windows is gated upstream. WSL2 works.
 - **First-run network requirement.** Three caches get populated on first call: `~/.cache/huggingface/hub/` (tiny-tts G.pth, ~50 MB via HF hub), `~/.cache/moonshine_voice/` (~80 MB ONNX), `~/nltk_data/` (`g2p_en`, `cmudict`, `averaged_perceptron_tagger_eng`). Run `python -m aawazz_mcp.scripts.prefetch_models` ahead of time on offline / air-gapped boxes.
-- **One TTS voice.** `tiny-tts` ships exactly one (`MALE`). Asking for a different voice returns a structured error — no silent downgrade. Multi-voice TTS is deferred to v1.1 (Moonshine TTS).
+- **Default-install TTS is single-voice English.** `tiny-tts` ships exactly one voice (`MALE`); other tiny-tts voice names return a structured error. Multi-voice and multi-language synthesis arrives via the v1.3 optional extras (`[multilingual]` for gTTS, `[piper]` for Piper, `[kokoro]` for Kokoro, `[xtts]` for XTTS-v2 voice cloning). Default routing keeps tiny-tts for English so existing v1.2 callers see no change.
 - **`listen` needs a mic + audio server.** `sounddevice` requires PulseAudio / PipeWire / CoreAudio access. Headless boxes, SSH sessions without `--enable-audio`, and most Docker containers will see `voices_list().capabilities.listen: false`. The tool itself returns a clean error rather than crashing.
-- **torch dependency.** `tiny-tts` pulls PyTorch — ~600 MB on disk. v1.1 may carve out a `[lite]` extras for users who only need STT.
+- **torch dependency.** `tiny-tts` pulls PyTorch — ~600 MB on disk. A `[lite]` extras carving for STT-only users is on the future-work list.
 - **stdio-safe by construction.** All logging goes to stderr; tiny-tts's stdout `print()` is wrapped in a `redirect_stdout` context manager. Don't add `print()` calls to source — see the lint rule in `pyproject.toml`.
 - **Sandboxed runtimes can break audio at runtime even though probes succeed.** `voices_list().capabilities.play == true` only checks that a player binary (`paplay` / `aplay` / `afplay`) is on `PATH`; it can't predict whether the binary will be allowed to reach the host audio device. Confirmed v1.1.0 (Codex CLI sandbox): `paplay` returned `Connection refused / Operation not permitted`, `aplay` returned `audio open error: Operation not permitted`. The aawazz response is correct (`speak(play=true).played == false`), but the operator should know to either run `aawazz-mcp` outside the restricted sandbox or wire `--remote` to a host-side `aawazz-mouth` that has PulseAudio / PipeWire / ALSA access. Same trap exists for `listen` — a probe-true but routing-blocked mic.
 - **Mic capture has a hard timeout (since v1.1.1).** `record_to_wav_hard_timeout` runs the capture in a child process and force-kills after `duration_s + 5s` if `sd.wait()` wedges (mic enumerates but produces no samples — OS mute, UEFI mute, routing wrong source). Both the MCP `listen` tool and `aawazz-dictate` now share this surface. In v1.1.0 only dictate had it; `listen` could hang the runtime indefinitely.

@@ -37,18 +37,15 @@ from aawazz_mcp.audio.paths import (
 from aawazz_mcp.backends.base import Backend
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.models.stt_loader import _arch_from_string
-from aawazz_mcp.models.whisper_stt import supported_languages as whisper_langs
 from aawazz_mcp.provider_base import (
     ProviderError,
     SttRequest,
     TtsRequest,
 )
-from aawazz_mcp import registry as _registry
+from aawazz_mcp.routing import Router
 
 # Importing the providers package triggers built-in registration as a side
-# effect. Phase-2 routing will replace the hardcoded provider names below
-# (``"tiny-tts"`` / ``"gtts"`` / ``"moonshine"`` / ``"whisper"``) with the
-# routing chain.
+# effect.
 import aawazz_mcp.providers  # noqa: F401, PLC0415
 
 log = logging.getLogger("aawazz_mcp.backends.local")
@@ -83,21 +80,40 @@ class LocalBackend(Backend):
 
     def __init__(self, cfg: AawazzConfig) -> None:
         self.cfg = cfg
+        self._router = Router(cfg.routing)
 
     # ------------------------------------------------------------------ warm
 
     async def warm(self) -> None:
-        """Eagerly load default TTS + STT models.
+        """Eagerly load the default TTS + STT providers.
 
-        Used by ``aawazz-mcp --warm`` and ``scripts/prefetch_models.py``. Lazy
-        is the runtime default — eager warm at startup is opt-in because some
-        MCP runtimes time out the ``initialize`` call after 5-10s.
+        Resolves the default chains via the router so this honors per-language
+        config too. Lazy is the runtime default — eager warm at startup is
+        opt-in because some MCP runtimes time out ``initialize`` after 5-10s.
+        Providers without a ``warm`` method are skipped silently.
         """
-        await _registry.get_tts("tiny-tts").warm()
-        await _registry.get_stt("moonshine").warm(
-            language=self.cfg.default_language,
-            model_arch=self.cfg.default_model_arch,
-        )
+        try:
+            tts = self._router.resolve_tts(self.cfg.default_language)
+            warm = getattr(tts, "warm", None)
+            if warm is not None:
+                await warm()
+        except ProviderError:
+            log.warning("warm: no tts provider available for default language")
+
+        try:
+            stt = self._router.resolve_stt(self.cfg.default_language)
+            warm = getattr(stt, "warm", None)
+            if warm is not None:
+                # Moonshine warm takes lang+arch; whisper takes nothing.
+                try:
+                    await warm(
+                        language=self.cfg.default_language,
+                        model_arch=self.cfg.default_model_arch,
+                    )
+                except TypeError:
+                    await warm()
+        except ProviderError:
+            log.warning("warm: no stt provider available for default language")
 
     # ------------------------------------------------------------------ speak
 
@@ -109,38 +125,18 @@ class LocalBackend(Backend):
         output_path: str | None = None,
         play: bool = False,
         language: str = "en",
+        tts_provider: str | None = None,
     ) -> dict:
-        """Synthesize ``text`` to a WAV. See SPEC §1.1 for response shape.
+        """Synthesize ``text`` via the routing chain. See SPEC §3 for routing
+        semantics; SPEC §1.1 for the response shape.
 
-        English uses tiny-tts + DSP profiles; other languages use gTTS.
+        ``tts_provider`` overrides the chain (hard-fail if unavailable);
+        otherwise the per-language preference list from ``cfg.routing`` is
+        consulted, then the ``default`` chain.
         """
         normalized_voice = (voice or "").upper()
 
-        # Non-English TTS via gTTS (lightweight, needs internet).
-        if language != "en":
-            return await self._speak_gtts(
-                text=text,
-                output_path=output_path,
-                language=language,
-                play=play,
-            )
-
-        # Voice validation for tiny-tts / DSP profiles.
-        if normalized_voice not in _AVAILABLE_VOICES:
-            return _err(
-                f"voice {voice!r} not supported; "
-                f"available: {', '.join(_AVAILABLE_VOICES)}",
-                available_voices=list(_AVAILABLE_VOICES),
-                requested_voice=voice,
-            )
-
-        # Bound the speed range. tiny-tts itself accepts any positive float
-        # but extreme values produce garbage.
-        if not (0.5 <= speed <= 2.0):
-            return _err(
-                f"speed {speed} out of range [0.5, 2.0]",
-                requested_speed=speed,
-            )
+        # Common input validation (independent of provider choice).
         if not text or not text.strip():
             return _err("text is empty", requested_text=text)
         if len(text) > 4000:
@@ -148,6 +144,43 @@ class LocalBackend(Backend):
                 f"text length {len(text)} exceeds 4000-char cap",
                 requested_text_length=len(text),
             )
+        if not (0.5 <= speed <= 2.0):
+            return _err(
+                f"speed {speed} out of range [0.5, 2.0]",
+                requested_speed=speed,
+            )
+
+        # Route to a provider via the routing chain (or per-call override).
+        try:
+            provider = self._router.resolve_tts(language, override=tts_provider)
+        except ProviderError as e:
+            return _err(
+                str(e),
+                requested_language=language,
+                requested_tts_provider=tts_provider,
+            )
+
+        # Voice validation + DSP detection. tiny-tts has the strict
+        # MALE/DSP allow-list inherited from v1.2; other providers validate
+        # internally. DSP voices are a v1.2 hack — phase 5 moves them to
+        # PostProcessor objects driven by the ``post_process=`` param.
+        is_dsp_voice = normalized_voice in _DSP_VOICES
+        if provider.name == "tiny-tts" and normalized_voice not in _AVAILABLE_VOICES:
+            return _err(
+                f"voice {voice!r} not supported; "
+                f"available: {', '.join(_AVAILABLE_VOICES)}",
+                available_voices=list(_AVAILABLE_VOICES),
+                requested_voice=voice,
+            )
+
+        # Translate voice for synthesis. tiny-tts uses MALE; gtts ignores
+        # voice; other providers receive ``voice`` as-is.
+        if provider.name == "tiny-tts":
+            req_voice = "MALE" if is_dsp_voice else normalized_voice
+        elif provider.name == "gtts":
+            req_voice = None
+        else:
+            req_voice = voice
 
         # Resolve output_path: explicit absolute path wins; else default dir
         # + hashed name. ``default_output_dir`` falls back to tempdir if
@@ -163,25 +196,28 @@ class LocalBackend(Backend):
         else:
             out = default_output_dir() / hashed_wav_name(text)
 
-        # tiny-tts always uses "MALE" internally; we apply DSP profiles after.
-        tts_voice = "MALE" if normalized_voice in _DSP_VOICES else normalized_voice
         try:
-            tts_result = await _registry.get_tts("tiny-tts").synthesize(
+            tts_result = await provider.synthesize(
                 TtsRequest(
                     text=text,
-                    language="en",
-                    voice=tts_voice,
+                    language=language,
+                    voice=req_voice,
                     speed=float(speed),
                     output_path=str(out),
                 )
             )
         except ProviderError as e:
-            return _err(str(e), hint="check stderr for provider traceback")
-        except Exception as e:  # noqa: BLE001 — tiny-tts wraps a pile of errors
-            log.exception("tts synthesize failed")
+            return _err(
+                str(e),
+                requested_language=language,
+                requested_tts_provider=tts_provider or provider.name,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("tts synthesize failed via %s", provider.name)
             return _err(
                 f"synthesis failed: {e}",
-                hint="check stderr for tiny-tts traceback",
+                hint="check stderr for provider traceback",
+                requested_tts_provider=tts_provider or provider.name,
             )
 
         audio_path = tts_result.audio_path
@@ -189,10 +225,9 @@ class LocalBackend(Backend):
         sample_rate = tts_result.sample_rate
         latency_ms = tts_result.latency_ms
 
-        # Apply DSP voice profile if not plain MALE. Phase 5 moves this into
-        # a PostProcessor pipeline; for phase 1 it stays inline to preserve
-        # behavior identically to v1.2.x.
-        if normalized_voice in _DSP_VOICES:
+        # Apply DSP voice profile when caller requested one and provider
+        # accepts it. Phase 5 generalizes this to a post_process= pipeline.
+        if is_dsp_voice and provider.capabilities().accepts_dsp_profiles:
             try:
                 import soundfile as sf
                 from aawazz_mcp.audio.dsp import apply_profile
@@ -215,6 +250,21 @@ class LocalBackend(Backend):
             except Exception as e:  # noqa: BLE001 — never crash speak() over playback
                 log.warning("playback failed: %s", e)
 
+        # Response shape preserves v1.2 back-compat: gtts emits voice="gtts"
+        # and backend="local-gtts"; everything else stays "local".
+        if provider.name == "gtts":
+            return {
+                "audio_path": audio_path,
+                "duration_s": duration_s,
+                "sample_rate": sample_rate,
+                "latency_ms": latency_ms,
+                "voice": "gtts",
+                "speed": 1.0,
+                "text_hash": _text_hash(text),
+                "played": played,
+                "backend": "local-gtts",
+                "provider": provider.name,
+            }
         return {
             "audio_path": audio_path,
             "duration_s": duration_s,
@@ -225,75 +275,7 @@ class LocalBackend(Backend):
             "text_hash": _text_hash(text),
             "played": played,
             "backend": "local",
-        }
-
-    # ------------------------------------------------------------- gtts speak
-
-    async def _speak_gtts(
-        self,
-        text: str,
-        output_path: str | None,
-        language: str,
-        play: bool,
-    ) -> dict:
-        """Synthesize via gTTS. No DSP support, no voice selection."""
-        from pathlib import Path
-
-        from aawazz_mcp.audio.paths import default_output_dir, hashed_wav_name
-
-        if not text or not text.strip():
-            return _err("text is empty", requested_text=text)
-        if len(text) > 4000:
-            return _err(
-                f"text length {len(text)} exceeds 4000-char cap",
-                requested_text_length=len(text),
-            )
-
-        if output_path:
-            out = Path(output_path).expanduser()
-            if not out.is_absolute():
-                return _err(
-                    f"output_path must be absolute, got {output_path!r}",
-                    requested_output_path=output_path,
-                )
-            out.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            out = default_output_dir() / hashed_wav_name(text)
-
-        try:
-            tts_result = await _registry.get_tts("gtts").synthesize(
-                TtsRequest(
-                    text=text,
-                    language=language,
-                    output_path=str(out),
-                )
-            )
-        except ProviderError as e:
-            return _err(
-                str(e),
-                hint="gTTS requires internet access",
-                requested_language=language,
-            )
-
-        played = False
-        if play:
-            try:
-                from aawazz_mcp.audio.playback import play as _play
-
-                played = bool(_play(tts_result.audio_path))
-            except Exception as e:  # noqa: BLE001
-                log.warning("playback failed: %s", e)
-
-        return {
-            "audio_path": tts_result.audio_path,
-            "duration_s": tts_result.duration_s,
-            "sample_rate": tts_result.sample_rate,
-            "latency_ms": tts_result.latency_ms,
-            "voice": "gtts",
-            "speed": 1.0,
-            "text_hash": _text_hash(text),
-            "played": played,
-            "backend": "local-gtts",
+            "provider": provider.name,
         }
 
     # -------------------------------------------------------------- transcribe
@@ -303,10 +285,28 @@ class LocalBackend(Backend):
         audio_path: str,
         language: str = "en",
         model_arch: str = "tiny_streaming",
+        stt_provider: str | None = None,
     ) -> dict:
-        """Transcribe a local WAV (or http(s) URL). See SPEC §1.2."""
-        # Validate model_arch up front (skip for whisper-only languages).
-        if language not in whisper_langs():
+        """Transcribe a local WAV (or http(s) URL) via the routing chain.
+
+        See SPEC §3 for routing semantics; SPEC §1.2 for response shape.
+        ``stt_provider`` overrides the chain (hard-fail on missing or
+        language-incompatible).
+        """
+        # Resolve the STT provider via the routing chain.
+        try:
+            provider = self._router.resolve_stt(language, override=stt_provider)
+        except ProviderError as e:
+            return _err(
+                str(e),
+                requested_language=language,
+                requested_stt_provider=stt_provider,
+            )
+
+        # Validate model_arch up front for moonshine-class providers (skip
+        # for whisper which doesn't expose a Moonshine arch). Whisper / future
+        # providers validate their own arch.
+        if provider.name == "moonshine":
             try:
                 _arch_from_string(model_arch)
             except ValueError as e:
@@ -332,14 +332,18 @@ class LocalBackend(Backend):
         else:
             local_path = audio_path
 
-        # Nepali (and future whisper-only langs) route through Whisper STT.
-        provider_name = "whisper" if language in whisper_langs() else "moonshine"
+        # Whisper has no caller-facing arch; pass None so the provider
+        # uses its registered model.
+        req_arch: str | None = (
+            None if provider.name == "whisper" else model_arch
+        )
+
         try:
-            stt_result = await _registry.get_stt(provider_name).transcribe(
+            stt_result = await provider.transcribe(
                 SttRequest(
                     audio_path=local_path,
                     language=language,
-                    model_arch=None if provider_name == "whisper" else model_arch,
+                    model_arch=req_arch,
                 )
             )
         except ProviderError as e:
@@ -349,7 +353,7 @@ class LocalBackend(Backend):
         except IsADirectoryError as e:
             return _err(str(e), requested_audio_path=audio_path)
         except Exception as e:
-            log.exception("%s transcribe failed", provider_name)
+            log.exception("%s transcribe failed", provider.name)
             return _err(
                 f"transcribe failed: {e}",
                 requested_audio_path=audio_path,
@@ -366,10 +370,11 @@ class LocalBackend(Backend):
             "audio_duration_s": stt_result.audio_duration_s,
             "sample_rate": stt_result.sample_rate,
             "latency_ms": stt_result.latency_ms,
-            "model_arch": model_arch,
+            "model_arch": stt_result.model_arch or model_arch,
             "language": language,
             "audio_path": audio_path,  # echo the caller's input (URL or path)
             "backend": "local",
+            "provider": provider.name,
         }
 
     async def _download_audio_to_temp(self, url: str) -> Path:
@@ -400,11 +405,13 @@ class LocalBackend(Backend):
         language: str = "en",
         model_arch: str = "tiny_streaming",
         save_audio: bool = False,
+        stt_provider: str | None = None,
     ) -> dict:
-        """Capture mic, transcribe. See SPEC §1.3.
+        """Capture mic, transcribe via the routing chain. See SPEC §1.3.
 
         Always local — remote-mode mic-tunneling is out of scope; the
         dispatcher routes ``listen`` straight here regardless of cfg.mode.
+        ``stt_provider`` overrides the chain.
         """
         # Hard cap matches SPEC §1.3.
         if not (0.5 <= duration_s <= 30.0):
@@ -413,16 +420,27 @@ class LocalBackend(Backend):
                 requested_duration_s=duration_s,
             )
 
-        # Validate arch eagerly so user sees the error before mic capture.
+        # Resolve provider before mic capture so the arch-validation error
+        # surfaces fast.
         try:
-            _arch_from_string(model_arch)
-        except ValueError as e:
+            provider = self._router.resolve_stt(language, override=stt_provider)
+        except ProviderError as e:
             return _err(
                 str(e),
-                requested_model_arch=model_arch,
-                hint="valid: tiny, tiny_streaming, base, base_streaming, "
-                "small_streaming, medium_streaming",
+                requested_language=language,
+                requested_stt_provider=stt_provider,
             )
+
+        if provider.name == "moonshine":
+            try:
+                _arch_from_string(model_arch)
+            except ValueError as e:
+                return _err(
+                    str(e),
+                    requested_model_arch=model_arch,
+                    hint="valid: tiny, tiny_streaming, base, base_streaming, "
+                    "small_streaming, medium_streaming",
+                )
 
         # Resolve capture path. ``save_audio=False`` writes to tempdir + unlinks
         # post-transcribe. ``save_audio=True`` writes under AAWAZZ_HOME and is
@@ -481,13 +499,15 @@ class LocalBackend(Backend):
                 requested_audio_path=str(capture_path),
             )
 
-        provider_name = "whisper" if language in whisper_langs() else "moonshine"
+        req_arch: str | None = (
+            None if provider.name == "whisper" else model_arch
+        )
         try:
-            stt_result = await _registry.get_stt(provider_name).transcribe(
+            stt_result = await provider.transcribe(
                 SttRequest(
                     audio_path=str(capture_path),
                     language=language,
-                    model_arch=None if provider_name == "whisper" else model_arch,
+                    model_arch=req_arch,
                 )
             )
         except ProviderError as e:
@@ -508,10 +528,11 @@ class LocalBackend(Backend):
             "audio_duration_s": stt_result.audio_duration_s,
             "sample_rate": stt_result.sample_rate,
             "latency_ms": stt_result.latency_ms,
-            "model_arch": model_arch,
+            "model_arch": stt_result.model_arch or model_arch,
             "language": language,
             "audio_path": str(capture_path) if save_audio else None,
             "backend": "local",
+            "provider": provider.name,
         }
 
         if not save_audio:

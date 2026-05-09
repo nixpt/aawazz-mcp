@@ -67,6 +67,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         output_path: str | None = None,
         play: bool = False,
         language: str = "en",
+        tts_provider: str | None = None,
     ) -> dict:
         """Synthesize speech from text.
 
@@ -79,12 +80,16 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
                 ``$AAWAZZ_HOME/mouth/<utc-ts>-<sha8>.wav``.
             play: If true and a desktop audio player is available
                 (paplay/aplay/afplay), autoplay the output WAV.
-            language: ISO 639-1 language code. "en" uses tiny-tts + DSP profiles;
-                other languages use gTTS (Google TTS, requires internet).
+            language: ISO 639-1 language code. Default routing: "en" uses
+                tiny-tts + DSP profiles; other languages use gTTS.
+            tts_provider: Override the routing chain for this call. Hard-fails
+                if the provider is missing or doesn't support the language.
+                Use ``voices_list().providers.tts[*].name`` to see what's
+                registered. Default ``None`` follows ``cfg.routing.tts``.
 
         Returns:
             ``{audio_path, duration_s, sample_rate, latency_ms, voice, speed,
-            text_hash, played, backend}``.
+            text_hash, played, backend, provider}``.
         """
         return await dispatcher.speak(
             text=text,
@@ -93,6 +98,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             output_path=output_path,
             play=play,
             language=language,
+            tts_provider=tts_provider,
         )
 
     @mcp.tool()
@@ -100,25 +106,30 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         audio_path: str,
         language: str = "en",
         model_arch: str = "tiny_streaming",
+        stt_provider: str | None = None,
     ) -> dict:
-        """Transcribe a WAV file (or http(s) URL) via Moonshine.
+        """Transcribe a WAV file (or http(s) URL).
 
         Args:
             audio_path: Absolute path to a WAV (16/24/32-bit PCM) or http(s) URL.
                 URLs are downloaded to ``$TMPDIR/aawazz-stt-<sha8>.wav`` and
                 unlinked after transcription.
             language: ISO 639-1 code, e.g. "en".
-            model_arch: One of tiny / tiny_streaming / base / base_streaming /
-                small_streaming / medium_streaming.
+            model_arch: Moonshine arch (tiny / tiny_streaming / base /
+                base_streaming / small_streaming / medium_streaming).
+                Ignored when the resolved provider isn't Moonshine.
+            stt_provider: Override the routing chain for this call. Hard-fails
+                if the provider is missing or doesn't support the language.
 
         Returns:
             ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
-            language, audio_path, backend}``.
+            language, audio_path, backend, provider}``.
         """
         return await dispatcher.transcribe(
             audio_path=audio_path,
             language=language,
             model_arch=model_arch,
+            stt_provider=stt_provider,
         )
 
     @mcp.tool()
@@ -127,6 +138,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         language: str = "en",
         model_arch: str = "tiny_streaming",
         save_audio: bool = False,
+        stt_provider: str | None = None,
     ) -> dict:
         """Capture `duration_s` of microphone audio and transcribe.
 
@@ -135,10 +147,12 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             language: ISO 639-1 code.
             model_arch: See :func:`transcribe`.
             save_audio: If true, return the captured WAV path; otherwise discard.
+            stt_provider: Override the routing chain. Same semantics as
+                :func:`transcribe`'s ``stt_provider``.
 
         Returns:
             ``{text, audio_duration_s, sample_rate, latency_ms, model_arch,
-            language, audio_path, backend}`` (backend always "local").
+            language, audio_path, backend, provider}`` (backend always "local").
 
         Notes:
             Always runs locally — the mic is on the host running this MCP server.
@@ -150,6 +164,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             language=language,
             model_arch=model_arch,
             save_audio=save_audio,
+            stt_provider=stt_provider,
         )
 
     @mcp.tool()

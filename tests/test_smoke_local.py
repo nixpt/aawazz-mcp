@@ -74,10 +74,13 @@ def test_gtts_speak_writes_real_wav(tmp_aawazz_home: Path, tmp_path: Path) -> No
 
     from aawazz_mcp.backends.local import LocalBackend
 
+    from aawazz_mcp.routing import RoutingConfig
+
     class _FakeCfg:
         output_dir = tmp_aawazz_home / "mouth"
         default_language = "en"
         default_model_arch = "tiny_streaming"
+        routing = RoutingConfig.builtin_default()
 
     backend = LocalBackend(_FakeCfg())  # type: ignore[arg-type]
     out_wav = tmp_path / "es.wav"
@@ -113,10 +116,13 @@ def test_local_backend_speak_validates_voice(tmp_aawazz_home: Path) -> None:
     from aawazz_mcp.audio.dsp import VOICE_PROFILES
     from aawazz_mcp.backends.local import LocalBackend
 
+    from aawazz_mcp.routing import RoutingConfig
+
     class _FakeCfg:
         output_dir = tmp_aawazz_home / "mouth"
         default_language = "en"
         default_model_arch = "tiny_streaming"
+        routing = RoutingConfig.builtin_default()
 
     backend = LocalBackend(_FakeCfg())  # type: ignore[arg-type]
 

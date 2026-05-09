@@ -49,6 +49,35 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help="Log level (default: INFO).",
     )
+
+    # ── v1.3 routing layer ────────────────────────────────────────────────
+    p.add_argument(
+        "--routing-config",
+        metavar="FILE",
+        default=None,
+        help=(
+            "TOML file with [tts.routing] / [stt.routing] tables. Defaults to "
+            "$AAWAZZ_ROUTING_FILE or ~/.config/aawazz/aawazz.toml."
+        ),
+    )
+    p.add_argument(
+        "--tts-default",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Provider name for the default TTS chain (overrides config + env). "
+            "Built-in: gtts. Per-call ``tts_provider=`` still wins."
+        ),
+    )
+    p.add_argument(
+        "--stt-default",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Provider name for the default STT chain (overrides config + env). "
+            "Built-in: moonshine. Per-call ``stt_provider=`` still wins."
+        ),
+    )
     return p
 
 

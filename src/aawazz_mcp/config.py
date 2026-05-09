@@ -27,7 +27,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from aawazz_mcp.routing import RoutingConfig
+
+
+def _default_routing() -> "RoutingConfig":
+    """Lazy import to avoid circular dependency at module-load time."""
+    from aawazz_mcp.routing import RoutingConfig
+
+    return RoutingConfig.builtin_default()
 
 
 BackendMode = Literal["local", "remote"]
@@ -104,6 +114,11 @@ class AawazzConfig:
     default_language: str = "en"
     default_model_arch: str = "tiny_streaming"
 
+    # v1.3 provider routing config (built-in default matches v1.2.x behavior).
+    routing: "RoutingConfig" = field(
+        default_factory=lambda: _default_routing()
+    )
+
     # ----- Resolution helpers ------------------------------------------------
 
     @classmethod
@@ -116,6 +131,9 @@ class AawazzConfig:
         host: str = "127.0.0.1",
         port: int = 7860,
         warm: bool = False,
+        routing_config_path: str | None = None,
+        tts_default_override: str | None = None,
+        stt_default_override: str | None = None,
     ) -> "AawazzConfig":
         """Apply the four-tier resolution order. Used by both classmethods."""
         env = env if env is not None else os.environ
@@ -143,6 +161,15 @@ class AawazzConfig:
 
         mode: BackendMode = "remote" if (mouth_url or ears_url) else "local"
 
+        from aawazz_mcp.routing import RoutingConfig  # noqa: PLC0415
+
+        routing = RoutingConfig.load(
+            routing_config_path,
+            tts_default_override=tts_default_override,
+            stt_default_override=stt_default_override,
+            env=env,
+        )
+
         return cls(
             mode=mode,
             remote_mouth_url=mouth_url,
@@ -151,6 +178,7 @@ class AawazzConfig:
             host=host,
             port=port,
             warm=warm,
+            routing=routing,
         )
 
     @classmethod
@@ -158,7 +186,9 @@ class AawazzConfig:
         """Build config from an ``argparse.Namespace`` (CLI > env > default).
 
         Recognised attributes (all optional): ``remote``, ``transport``, ``host``,
-        ``port``, ``warm``. Missing attributes fall back to the dataclass default.
+        ``port``, ``warm``, plus v1.3 routing flags ``routing_config`` /
+        ``tts_default`` / ``stt_default``. Missing attributes fall back to the
+        dataclass default.
         """
         cli_remote = getattr(args, "remote", None)
         return cls._resolve(
@@ -167,6 +197,9 @@ class AawazzConfig:
             host=getattr(args, "host", "127.0.0.1"),
             port=getattr(args, "port", 7860),
             warm=bool(getattr(args, "warm", False)),
+            routing_config_path=getattr(args, "routing_config", None),
+            tts_default_override=getattr(args, "tts_default", None),
+            stt_default_override=getattr(args, "stt_default", None),
         )
 
     @classmethod

@@ -157,16 +157,10 @@ class Dispatcher:
                 "direction": p.direction,
             })
 
-        # ── Phase-1 hardcoded routing (see LocalBackend.speak/transcribe) ───
+        # ── Live routing chain from cfg ─────────────────────────────────────
         routing = {
-            "tts": {
-                "en": ["tiny-tts"],
-                "default": ["gtts"],
-            },
-            "stt": {
-                "ne": ["whisper"],
-                "default": ["moonshine"],
-            },
+            "tts": {k: list(v) for k, v in self.cfg.routing.tts.items()},
+            "stt": {k: list(v) for k, v in self.cfg.routing.stt.items()},
         }
 
         # ── v1 alias views (back-compat for callers on the old shape) ──────

@@ -240,5 +240,15 @@ class XttsTtsProvider:
             return
         await self._ensure_loaded()
 
+    @property
+    def supports_streaming(self) -> bool:
+        # XTTS-v2 is heavy and batch-oriented. Streaming not in scope for v1.4.
+        return False
+
+    async def synthesize_stream(self, request: TtsRequest, text_stream):  # noqa: ARG002
+        msg = "XttsTtsProvider does not support synthesize_stream"
+        raise ProviderError(msg)
+        yield  # noqa: B901  - unreachable; marks as async generator
+
     async def aclose(self) -> None:
         self._tts = None

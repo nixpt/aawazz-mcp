@@ -357,5 +357,16 @@ class PiperTtsProvider:
             voice_id = sorted(self._installed)[0]
         await self._ensure_voice_loaded(voice_id)
 
+    @property
+    def supports_streaming(self) -> bool:
+        # Piper streams natively but the v1.4 phase-2 wiring only ships
+        # tiny-tts streaming. Piper streaming follow-up is filed.
+        return False
+
+    async def synthesize_stream(self, request: TtsRequest, text_stream):  # noqa: ARG002
+        msg = "PiperTtsProvider streaming arrives in a follow-up; use batch synthesize"
+        raise ProviderError(msg)
+        yield  # noqa: B901  - unreachable; marks as async generator
+
     async def aclose(self) -> None:
         self._loaded.clear()

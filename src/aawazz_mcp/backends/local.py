@@ -698,6 +698,7 @@ class LocalBackend(Backend):
         voice: str = "MALE",
         speed: float = 1.0,
         play: bool = False,
+        stream: bool = False,
         post_process: list[str] | None = None,
         output_path: str | None = None,
         max_tokens: int = 256,
@@ -738,7 +739,6 @@ class LocalBackend(Backend):
                 requested_llm_provider=llm_provider,
             )
 
-        # LLM call.
         llm_req = LlmRequest(
             messages=tuple(msgs),
             system_prompt=system_prompt,
@@ -747,6 +747,24 @@ class LocalBackend(Backend):
             temperature=float(temperature),
             timeout_s=float(timeout_s),
         )
+
+        # Stream path branches early — output_path resolution happens inside
+        # _respond_stream since the streaming TTS provider needs it up front.
+        if stream:
+            return await self._respond_stream(
+                llm=llm,
+                llm_req=llm_req,
+                language=language,
+                voice=voice,
+                speed=speed,
+                play=play,
+                post_process=post_process,
+                output_path=output_path,
+                tts_provider=tts_provider,
+                llm_model=llm_model,
+            )
+
+        # Batch path (v1.4 phase 1 behavior).
         try:
             llm_result = await llm.complete(llm_req)
         except ProviderError as e:
@@ -816,5 +834,242 @@ class LocalBackend(Backend):
             "finish_reason": llm_result.finish_reason,
             "post_process_chain": speak_result.get("post_process_chain", []),
             "language_detected": llm_result.language_detected,
+            "backend": "local",
+        }
+
+    # ----------------------------------------------------- respond (streaming)
+
+    async def _respond_stream(
+        self,
+        *,
+        llm,
+        llm_req,
+        language: str,
+        voice: str,
+        speed: float,
+        play: bool,
+        post_process: list[str] | None,
+        output_path: str | None,
+        tts_provider: str | None,
+        llm_model: str | None,
+    ) -> dict:
+        """Stream-orchestrate respond. Pipes ``llm.stream()`` deltas through
+        the sentence chunker, drives ``tts.synthesize_stream``, plays each
+        TtsChunk as it arrives. Returns a final dict with concatenated text,
+        full WAV path, and first-audio / total latency metrics.
+
+        When the TTS provider doesn't support streaming, falls back to:
+        accumulate full LLM text, then call provider.synthesize batch — same
+        latency as ``respond(stream=False)``.
+        """
+        from aawazz_mcp.audio.sentence_chunker import chunk_stream  # noqa: PLC0415
+
+        # Resolve TTS provider (en-path uses tiny-tts by default; routing
+        # respects per-language config and tts_provider override).
+        try:
+            provider = self._router.resolve_tts(
+                language, override=tts_provider
+            )
+        except ProviderError as e:
+            return _err(
+                str(e), hint=e.hint, requested_language=language,
+                requested_tts_provider=tts_provider,
+            )
+
+        # Resolve output_path early — both streaming and fallback paths need it.
+        if output_path:
+            out = Path(output_path).expanduser()
+            if not out.is_absolute():
+                return _err(
+                    f"output_path must be absolute, got {output_path!r}",
+                    requested_output_path=output_path,
+                )
+            out.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            out = default_output_dir() / hashed_wav_name(f"respond-stream-{time.time()}")
+
+        # Fallback: TTS provider without streaming → behave like batch
+        # respond(stream=False) under the hood. Keeps the contract uniform.
+        if not provider.supports_streaming:
+            log.info(
+                "tts provider %r does not support streaming; falling back to batch",
+                provider.name,
+            )
+            return await self._respond_stream_fallback_batch(
+                llm=llm, llm_req=llm_req, language=language,
+                voice=voice, speed=speed, play=play,
+                post_process=post_process, output_path=str(out),
+                tts_provider=tts_provider,
+            )
+
+        # Real streaming: pipe LLM deltas → sentence chunker → TTS chunks → play.
+        accumulated_text: list[str] = []
+        first_audio_at: float | None = None
+        first_token_at: float | None = None
+        played_any = False
+        chunks_played = 0
+        playback_provider = _registry.get_playback("shell")
+
+        t0 = time.time()
+
+        async def _delta_stream():
+            """Translate llm.stream() into a string async-iterator,
+            recording first-token-arrival time on the way through."""
+            nonlocal first_token_at
+            async for c in llm.stream(llm_req):
+                if c.text and first_token_at is None:
+                    first_token_at = time.time() - t0
+                if c.text:
+                    accumulated_text.append(c.text)
+                    yield c.text
+
+        sentences = chunk_stream(_delta_stream(), language=language)
+
+        tts_request = TtsRequest(
+            text="",
+            language=language,
+            voice=voice,
+            speed=speed,
+            output_path=str(out),
+        )
+
+        try:
+            async for tts_chunk in provider.synthesize_stream(
+                tts_request, sentences
+            ):
+                if tts_chunk.is_final:
+                    continue
+                if first_audio_at is None:
+                    first_audio_at = time.time() - t0
+                # Write the chunk to a tempfile and play synchronously
+                # before pulling the next chunk. Synthesis of the next
+                # sentence runs in parallel via asyncio.to_thread inside
+                # provider.synthesize_stream.
+                if play:
+                    import soundfile as sf  # noqa: PLC0415
+                    import tempfile as _tempfile  # noqa: PLC0415
+
+                    tmp = _tempfile.NamedTemporaryFile(
+                        prefix="aawazz-stream-", suffix=".wav", delete=False
+                    )
+                    tmp.close()
+                    try:
+                        sf.write(
+                            tmp.name,
+                            tts_chunk.audio,
+                            int(tts_chunk.sample_rate),
+                            subtype="PCM_16",
+                        )
+                        try:
+                            ok = await playback_provider.play(tmp.name)
+                            played_any = played_any or ok
+                            chunks_played += 1
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("chunk playback failed: %s", e)
+                    finally:
+                        Path(tmp.name).unlink(missing_ok=True)
+        except ProviderError as e:
+            return _err(
+                str(e), hint=e.hint,
+                requested_language=language,
+                requested_tts_provider=provider.name,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception(
+                "stream synthesize failed via %s", provider.name
+            )
+            return _err(
+                f"stream synthesis failed: {e}",
+                requested_tts_provider=provider.name,
+            )
+
+        total_text = "".join(accumulated_text).strip()
+        total_ms = int((time.time() - t0) * 1000)
+
+        # Final WAV is at out (provider wrote it on is_final). Apply
+        # post_process chain on the cumulative file (same semantics as
+        # batch respond → speak's post_process pipeline).
+        post_chain = list(post_process) if post_process else []
+        if post_chain:
+            try:
+                _apply_audio_chain(str(out), post_chain, direction="tts")
+            except ProviderError as e:
+                log.warning("post_process on streamed WAV failed: %s", e)
+        return {
+            "text": total_text,
+            "audio_path": str(out),
+            "played": played_any,
+            "model": llm_model or "",
+            "llm_provider": llm.name,
+            "tts_provider": provider.name,
+            "first_token_ms": int(first_token_at * 1000) if first_token_at else None,
+            "first_audio_ms": int(first_audio_at * 1000) if first_audio_at else None,
+            "total_latency_ms": total_ms,
+            "chunks_played": chunks_played,
+            "post_process_chain": post_chain,
+            "stream": True,
+            "backend": "local",
+        }
+
+    async def _respond_stream_fallback_batch(
+        self,
+        *,
+        llm,
+        llm_req,
+        language: str,
+        voice: str,
+        speed: float,
+        play: bool,
+        post_process: list[str] | None,
+        output_path: str,
+        tts_provider: str | None,
+    ) -> dict:
+        """Stream LLM, then run a single batch TTS. Used when the resolved
+        TTS provider doesn't support synthesize_stream. Same end-to-end
+        latency as ``respond(stream=False)`` but the LLM half streams so
+        callers can observe progress (debug logging only in v1.4.0)."""
+        accumulated_text: list[str] = []
+        async for chunk in llm.stream(llm_req):
+            if chunk.text:
+                accumulated_text.append(chunk.text)
+        full_text = "".join(accumulated_text).strip()
+        if not full_text:
+            return _err(
+                "llm returned empty text (streaming)",
+                requested_llm_provider=llm.name,
+            )
+
+        speak_result = await self.speak(
+            text=full_text,
+            voice=voice,
+            speed=float(speed),
+            output_path=output_path,
+            play=play,
+            language=language,
+            tts_provider=tts_provider,
+            post_process=post_process,
+        )
+        if "error" in speak_result:
+            return {
+                "text": full_text,
+                "error": speak_result["error"],
+                "audio_path": None,
+                "llm_provider": llm.name,
+                "stream": True,
+                "fallback": "batch",
+                "backend": "local",
+            }
+        return {
+            "text": full_text,
+            "audio_path": speak_result["audio_path"],
+            "duration_s": speak_result["duration_s"],
+            "sample_rate": speak_result["sample_rate"],
+            "played": speak_result["played"],
+            "llm_provider": llm.name,
+            "tts_provider": speak_result.get("provider"),
+            "tts_latency_ms": speak_result["latency_ms"],
+            "post_process_chain": speak_result.get("post_process_chain", []),
+            "stream": True,
+            "fallback": "batch",
             "backend": "local",
         }

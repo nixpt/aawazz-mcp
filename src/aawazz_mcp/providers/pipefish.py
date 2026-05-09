@@ -32,6 +32,7 @@ from typing import Any
 
 from aawazz_mcp.provider_base import (
     LlmCapabilities,
+    LlmChunk,
     LlmRequest,
     LlmResult,
     ProviderError,
@@ -227,14 +228,105 @@ class PipefishLlmProvider:
 
         return _parse_chat_response(doc, latency_ms)
 
-    async def stream(self, request: LlmRequest):  # noqa: ARG002
-        """Async generator stub — phase 2 wires SSE. The lone ``yield``
-        below is unreachable; it makes Python treat this as an async
-        generator so callers can use ``async for`` and receive the
-        ProviderError on the first ``__anext__``."""
-        msg = "PipefishLlmProvider streaming arrives in v1.4 phase 2"
-        raise ProviderError(msg)
-        yield  # noqa: B901, RET504  - unreachable; marks as async generator
+    async def stream(self, request: LlmRequest):
+        """Stream Ollama-compat ``/api/chat`` deltas as :class:`LlmChunk`.
+
+        Pipefish (and Ollama itself) emit newline-delimited JSON when
+        ``stream=true``. Each line is one frame::
+
+            {"model": "...", "message": {"content": "..."}, "done": false}
+            ...
+            {"model": "...", "done": true, "prompt_eval_count": N, "eval_count": M}
+
+        We yield one ``LlmChunk(text=delta, is_final=False)`` per non-final
+        frame and one ``LlmChunk(text="", is_final=True)`` at the end.
+        """
+        if not self._available:
+            msg = "httpx not installed; install via ``pip install aawazz-mcp[llm]``"
+            raise ProviderError(msg)
+
+        messages = list(request.messages)
+        if request.system_prompt and not _has_system_role(messages):
+            messages.insert(
+                0, {"role": "system", "content": request.system_prompt}
+            )
+
+        body: dict[str, Any] = {
+            "messages": messages,
+            "max_tokens": int(request.max_tokens),
+            "temperature": float(request.temperature),
+            "top_p": float(request.top_p),
+            "stream": True,
+        }
+        if request.stop:
+            body["stop"] = list(request.stop)
+
+        caps = self.capabilities()
+        model = (
+            request.model
+            or self._default_model
+            or (caps.backend_models[0] if caps.backend_models else None)
+        )
+        if model is None:
+            msg = (
+                "pipefish requires a model name. Set AAWAZZ_PIPEFISH_MODEL, "
+                "pass llm_model= per call, or ensure /api/tags reports at "
+                "least one model."
+            )
+            raise ProviderError(msg)
+        body["model"] = model
+
+        extra_headers = (request.extra or {}).get("headers") or {}
+
+        import json as _json
+        import httpx  # noqa: PLC0415
+
+        url = f"{self._base_url}/api/chat"
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        headers.update(extra_headers)
+
+        async with httpx.AsyncClient(timeout=request.timeout_s) as client:
+            try:
+                async with client.stream(
+                    "POST", url, headers=headers, json=body
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            frame = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            log.debug("pipefish stream: bad JSON line %r", line[:80])
+                            continue
+
+                        msg = frame.get("message") or {}
+                        delta = msg.get("content") if isinstance(msg, dict) else ""
+                        is_final = bool(frame.get("done"))
+
+                        # Most frames carry a delta; the final frame has
+                        # done=true and may not carry message content.
+                        if delta or is_final:
+                            yield LlmChunk(
+                                text=delta or "",
+                                is_final=is_final,
+                            )
+            except httpx.TimeoutException as e:
+                msg = (
+                    f"pipefish stream timeout after {request.timeout_s}s "
+                    f"at {url}: {e}"
+                )
+                raise ProviderError(
+                    msg, hint="raise timeout_s or check pipefish load"
+                ) from e
+            except httpx.HTTPStatusError as e:
+                msg = (
+                    f"pipefish stream returned HTTP {e.response.status_code}: "
+                    f"{(await e.response.aread()).decode(errors='replace')[:200]}"
+                )
+                raise ProviderError(msg) from e
 
     async def aclose(self) -> None:
         pass

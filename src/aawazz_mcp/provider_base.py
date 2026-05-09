@@ -21,6 +21,7 @@ __all__ = [
     "TtsCapabilities",
     "TtsRequest",
     "TtsResult",
+    "TtsChunk",
     "TtsProvider",
     "SttCapabilities",
     "SttRequest",
@@ -135,6 +136,26 @@ class TtsResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class TtsChunk:
+    """One streaming TTS audio chunk (v1.4 phase 2).
+
+    Streaming providers yield these from ``synthesize_stream`` as text
+    sentences arrive from an LLM. The dispatcher plays each chunk
+    immediately while the next is being synthesized in parallel; the
+    cumulative buffer also gets written to ``request.output_path`` on the
+    final chunk so callers expecting a complete WAV still get it.
+    """
+
+    audio: Any
+    """``np.ndarray`` of float32 / int16 audio samples (mono)."""
+
+    sample_rate: int
+    is_final: bool = False
+    """True on the last chunk of a synthesize_stream session. The dispatcher
+    uses this to know when to write the cumulative WAV file."""
+
+
 @runtime_checkable
 class TtsProvider(Protocol):
     """Synthesizes text to a WAV file."""
@@ -150,6 +171,23 @@ class TtsProvider(Protocol):
     def capabilities(self) -> TtsCapabilities: ...
 
     async def synthesize(self, request: TtsRequest) -> TtsResult: ...
+
+    @property
+    def supports_streaming(self) -> bool:
+        """``True`` when ``synthesize_stream`` is implemented. Default ``False``;
+        streaming providers override. The dispatcher falls back to batch
+        ``synthesize`` after collecting full LLM output when this is False."""
+        ...
+
+    async def synthesize_stream(
+        self, request: TtsRequest, text_stream: "Any"
+    ) -> "Any":
+        """Async generator: consume text chunks from ``text_stream``
+        (``AsyncIterator[str]``), yield :class:`TtsChunk` per synthesized
+        audio segment, plus a final chunk with ``is_final=True``. Implementations
+        without streaming raise :class:`ProviderError` — callers should check
+        ``supports_streaming`` before invoking."""
+        ...
 
     async def aclose(self) -> None: ...
     """Best-effort resource release. May be a no-op."""

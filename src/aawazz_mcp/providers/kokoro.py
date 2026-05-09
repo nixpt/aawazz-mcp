@@ -401,5 +401,16 @@ class KokoroTtsProvider:
             return
         await self._ensure_loaded()
 
+    @property
+    def supports_streaming(self) -> bool:
+        # Kokoro has create_stream but the v1.4 phase-2 wiring only ships
+        # tiny-tts streaming. Kokoro streaming follow-up is filed.
+        return False
+
+    async def synthesize_stream(self, request: TtsRequest, text_stream):  # noqa: ARG002
+        msg = "KokoroTtsProvider streaming arrives in a follow-up; use batch synthesize"
+        raise ProviderError(msg)
+        yield  # noqa: B901  - unreachable; marks as async generator
+
     async def aclose(self) -> None:
         self._kokoro = None

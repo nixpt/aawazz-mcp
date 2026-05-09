@@ -167,16 +167,66 @@ async def test_complete_pipefish_5xx_raises_provider_error(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_phase1_raises_provider_error() -> None:
-    """v1.4 phase 1 ships batch only; stream() must hard-fail clean."""
+async def test_stream_phase2_yields_chunks(monkeypatch) -> None:
+    """v1.4 phase 2 ships real streaming. Mock httpx.AsyncClient.stream
+    to emit a sequence of Ollama-shaped ndjson frames; assert we yield
+    matching :class:`LlmChunk` events including the is_final terminator."""
     from aawazz_mcp.providers.pipefish import PipefishLlmProvider
 
-    p = PipefishLlmProvider()
-    with pytest.raises(ProviderError, match="phase 2"):
-        async for _ in p.stream(
-            LlmRequest(messages=({"role": "user", "content": "hi"},))
-        ):
+    # Reachability probe succeeds.
+    probe = MagicMock()
+    probe.json.return_value = {"models": [{"name": "qwen3"}]}
+    probe.raise_for_status.return_value = None
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: probe)
+
+    # Mock the streaming POST.
+    frames = [
+        '{"model":"qwen3","message":{"content":"Hello "},"done":false}',
+        '{"model":"qwen3","message":{"content":"world."},"done":false}',
+        '{"model":"qwen3","done":true,"prompt_eval_count":3,"eval_count":2}',
+    ]
+
+    class _StreamCtx:
+        async def aiter_lines(self):
+            for f in frames:
+                yield f
+
+        def raise_for_status(self):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+    class _AsyncClient:
+        def __init__(self, **kw):
             pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        def stream(self, method, url, **kw):  # noqa: ARG002
+            return _StreamCtx()
+
+    monkeypatch.setattr("httpx.AsyncClient", _AsyncClient)
+
+    p = PipefishLlmProvider()
+    chunks = []
+    async for chunk in p.stream(
+        LlmRequest(messages=({"role": "user", "content": "hi"},), model="qwen3")
+    ):
+        chunks.append(chunk)
+
+    assert len(chunks) == 3
+    assert chunks[0].text == "Hello "
+    assert chunks[0].is_final is False
+    assert chunks[1].text == "world."
+    assert chunks[2].is_final is True
 
 
 def test_system_prompt_prepended_when_absent() -> None:

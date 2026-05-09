@@ -199,6 +199,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         voice: str = "MALE",
         speed: float = 1.0,
         play: bool = False,
+        stream: bool = False,
         post_process: list[str] | None = None,
         output_path: str | None = None,
         max_tokens: int = 256,
@@ -206,7 +207,9 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         timeout_s: float = 30.0,
     ) -> dict:
         """Generate text via the routed LLM provider, then synthesize and
-        optionally play it. v1.4 phase 1 — batch only; streaming in phase 2.
+        optionally play it. v1.4 phase 2 — ``stream=True`` pipes LLM tokens
+        through the sentence chunker into ``synthesize_stream`` so audio
+        starts playing while the LLM is still generating.
 
         Args:
             prompt: One-shot user message. Mutually exclusive with ``messages``.
@@ -240,6 +243,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             voice=voice,
             speed=speed,
             play=play,
+            stream=stream,
             post_process=post_process,
             output_path=output_path,
             max_tokens=max_tokens,

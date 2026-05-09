@@ -15,6 +15,7 @@ from aawazz_mcp.models.tts_loader import TtsLoader
 from aawazz_mcp.provider_base import (
     ProviderError,
     TtsCapabilities,
+    TtsChunk,
     TtsRequest,
     TtsResult,
     VoiceCatalogEntry,
@@ -94,6 +95,89 @@ class TinyTtsProvider:
     async def warm(self) -> None:
         """Eagerly load the tiny-tts model. Used by ``aawazz-mcp --warm``."""
         await self._get_loader().load()
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def synthesize_stream(self, request: TtsRequest, text_stream):
+        """Synth-per-chunk: each text chunk → tiny-tts ``synthesize`` →
+        :class:`TtsChunk`. The cumulative audio is concatenated and written
+        as a complete WAV at ``request.output_path`` on the final chunk so
+        callers expecting a single file still get one.
+        """
+        if request.output_path is None:
+            msg = "TinyTtsProvider streaming requires output_path"
+            raise ProviderError(msg)
+
+        import asyncio  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        import numpy as np  # noqa: PLC0415
+        import soundfile as sf  # noqa: PLC0415
+
+        loader = self._get_loader()
+        voice = request.voice or "MALE"
+        speed = float(request.speed)
+
+        chunks: list[np.ndarray] = []
+        sample_rate = 22050  # tiny-tts default; updated from real synth output
+
+        async for sentence in text_stream:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+
+            tmp = tempfile.NamedTemporaryFile(
+                prefix="aawazz-tinytts-stream-", suffix=".wav", delete=False
+            )
+            tmp.close()
+            try:
+                meta = await loader.synthesize(
+                    text=sentence,
+                    output_path=tmp.name,
+                    voice=voice,
+                    speed=speed,
+                )
+                audio, sr = await asyncio.to_thread(sf.read, tmp.name)
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+
+            sample_rate = int(sr or meta.get("sample_rate") or 22050)
+            chunks.append(audio.astype(np.float32))
+            yield TtsChunk(
+                audio=audio.astype(np.float32),
+                sample_rate=sample_rate,
+                is_final=False,
+            )
+
+        # Write the cumulative WAV.
+        if chunks:
+            full = np.concatenate(chunks)
+            sf.write(
+                str(Path(request.output_path)),
+                full,
+                sample_rate,
+                subtype="PCM_16",
+            )
+            yield TtsChunk(
+                audio=np.zeros(0, dtype=np.float32),
+                sample_rate=sample_rate,
+                is_final=True,
+            )
+        else:
+            # No text produced — write a tiny silence so output_path exists.
+            silence = (0.0, np.zeros(int(sample_rate * 0.05), dtype=np.float32))
+            sf.write(
+                str(Path(request.output_path)),
+                silence[1],
+                sample_rate,
+                subtype="PCM_16",
+            )
+            yield TtsChunk(
+                audio=silence[1], sample_rate=sample_rate, is_final=True,
+            )
 
     async def aclose(self) -> None:
         self._loader = None

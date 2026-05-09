@@ -136,6 +136,16 @@ class GttsTtsProvider:
             voice_used=f"gtts:{request.language}",
         )
 
+    @property
+    def supports_streaming(self) -> bool:
+        # gTTS is HTTP-based and only returns a complete MP3 — no streaming.
+        return False
+
+    async def synthesize_stream(self, request: TtsRequest, text_stream):  # noqa: ARG002
+        msg = "GttsTtsProvider does not support synthesize_stream"
+        raise ProviderError(msg)
+        yield  # noqa: B901  - unreachable; marks as async generator
+
     async def aclose(self) -> None:
         # gtts is stateless; nothing to release.
         pass

@@ -214,6 +214,7 @@ async def _capture_and_transcribe(
         duration_s,
         str(capture_path),
         duration_s + 5.0,
+        "/tmp/aawazz-dictate.pid",
     )
     if rec.get("error") or rec.get("audio_path") is None:
         if delete_after:

@@ -78,6 +78,7 @@ def has_input_device() -> bool:
 def _record_sync(duration_s: float, output_path: str, sample_rate: int) -> dict[str, Any]:
     """Synchronous mic capture + WAV write. Runs in a worker thread."""
     try:
+        import numpy as np  # noqa: PLC0415
         import sounddevice as sd  # noqa: PLC0415
         import soundfile as sf  # noqa: PLC0415
     except Exception as exc:
@@ -88,13 +89,13 @@ def _record_sync(duration_s: float, output_path: str, sample_rate: int) -> dict[
         }
 
     try:
-        # int16 mono — matches soundfile's PCM_16 default and Moonshine's input.
-        audio = sd.rec(
-            int(duration_s * sample_rate),
-            samplerate=sample_rate,
-            channels=1,
-            dtype="int16",
-        )
+        # Pre-allocate the buffer with zeros so early-stop (sd.stop() via
+        # SIGUSR1 in _capture_worker) leaves the post-cut tail as silence
+        # rather than uninitialized memory — Moonshine handles trailing
+        # silence cleanly but would hallucinate on noise.
+        frames = int(duration_s * sample_rate)
+        audio = np.zeros((frames, 1), dtype=np.int16)
+        sd.rec(out=audio, samplerate=sample_rate)
         sd.wait()
     except Exception as exc:
         return {
@@ -161,7 +162,27 @@ def _capture_worker(
     pushes the result onto ``queue``. The parent process can hard-kill this
     worker (terminate / kill) when ``sd.wait`` wedges, which is impossible if
     the recording runs in the parent's thread pool.
+
+    Installs a ``SIGUSR1`` handler that calls ``sd.stop()`` so an external
+    toggle script can gracefully cut the recording — ``sd.wait`` returns
+    immediately, the partial buffer (zero-padded by ``_record_sync``) is
+    written, and the worker exits cleanly. Wrapper scripts find the worker
+    PID via the ``pid_file`` argument to :func:`record_to_wav_hard_timeout`.
     """
+    import signal as _signal
+
+    def _stop_handler(_signum, _frame):
+        try:
+            import sounddevice as _sd  # already imported below; cheap on cache
+            _sd.stop()
+        except Exception:
+            pass
+
+    try:
+        _signal.signal(_signal.SIGUSR1, _stop_handler)
+    except Exception:
+        pass  # platform without SIGUSR1 (Windows) — fall through, no toggle support
+
     try:
         result = asyncio.run(record_to_wav(duration_s=duration_s, output_path=output_path))
     except Exception as exc:  # noqa: BLE001
@@ -177,6 +198,7 @@ def record_to_wav_hard_timeout(
     duration_s: float,
     output_path: str,
     timeout_s: float,
+    pid_file: str | None = None,
 ) -> dict[str, Any]:
     """Subprocess-isolated :func:`record_to_wav` with a real hard timeout.
 
@@ -197,10 +219,18 @@ def record_to_wav_hard_timeout(
     Used by both the agent-facing MCP ``listen`` tool and the operator-side
     ``aawazz-dictate`` CLI. Plain :func:`record_to_wav` remains the primitive
     for callers that explicitly opt out of subprocess isolation.
+
+    Args:
+        pid_file: Optional path to write the capture worker's PID. External
+            toggle scripts ``kill -SIGUSR1 <pid>`` to gracefully early-stop
+            the recording (subprocess catches the signal, writes the partial
+            WAV, exits 0). The file is unlinked on return regardless of
+            outcome — best-effort, never raises.
     """
     # Local import keeps multiprocessing out of the hot path for callers that
     # only need the basic record_to_wav primitive.
     import multiprocessing as mp
+    import os
 
     ctx = mp.get_context("spawn")
     queue = ctx.Queue(maxsize=1)
@@ -210,36 +240,55 @@ def record_to_wav_hard_timeout(
         daemon=True,
     )
     proc.start()
-    proc.join(timeout_s)
 
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(2.0)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(2.0)
-        return {
-            "audio_path": None,
-            "error": "mic capture timed out (no samples arrived)",
-            "hint": (
-                f"device enumerated but produced no samples in {timeout_s:.1f}s. "
-                "Check: OS mute, UEFI mute, PulseAudio/PipeWire source routing, "
-                "container audio passthrough."
-            ),
-        }
-
-    if proc.exitcode not in (0, None):
-        return {
-            "audio_path": None,
-            "error": f"mic capture process exited with code {proc.exitcode}",
-            "hint": "check sounddevice / PortAudio input device configuration",
-        }
+    # Best-effort PID file for graceful-cut signaling. If the write fails,
+    # we still record (just without toggle support).
+    pid_file_written = False
+    if pid_file is not None and proc.pid is not None:
+        try:
+            with open(pid_file, "w") as fh:
+                fh.write(str(proc.pid))
+            pid_file_written = True
+        except Exception:
+            pass
 
     try:
-        return queue.get_nowait()
-    except Exception:
-        return {
-            "audio_path": None,
-            "error": "mic capture process returned no result",
-            "hint": "check sounddevice / PortAudio input device configuration",
-        }
+        proc.join(timeout_s)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(2.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(2.0)
+            return {
+                "audio_path": None,
+                "error": "mic capture timed out (no samples arrived)",
+                "hint": (
+                    f"device enumerated but produced no samples in {timeout_s:.1f}s. "
+                    "Check: OS mute, UEFI mute, PulseAudio/PipeWire source routing, "
+                    "container audio passthrough."
+                ),
+            }
+
+        if proc.exitcode not in (0, None):
+            return {
+                "audio_path": None,
+                "error": f"mic capture process exited with code {proc.exitcode}",
+                "hint": "check sounddevice / PortAudio input device configuration",
+            }
+
+        try:
+            return queue.get_nowait()
+        except Exception:
+            return {
+                "audio_path": None,
+                "error": "mic capture process returned no result",
+                "hint": "check sounddevice / PortAudio input device configuration",
+            }
+    finally:
+        if pid_file_written:
+            try:
+                os.unlink(pid_file)
+            except Exception:
+                pass

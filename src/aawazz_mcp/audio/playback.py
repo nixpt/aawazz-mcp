@@ -7,11 +7,13 @@ CoreAudio third (macOS).
 Contract:
     has_player() -> bool                          # any of paplay/aplay/afplay on PATH
     play(audio_path: str) -> bool                 # True on success, False on no-player
+    default_provider_name() -> str                # host-aware provider name
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 
@@ -79,3 +81,43 @@ def play(audio_path: str) -> bool:
         )
         return False
     return True
+
+
+# ── Default-provider selection ──────────────────────────────────────────────
+
+# Termux on Android exposes its PREFIX as ``/data/data/com.termux/files/usr``.
+# Detecting that prefix is a more reliable Android signal than ``uname`` —
+# proot-distro fakes uname to look like a regular Linux box, but $PREFIX
+# survives because the Termux shell sets it before chrooting.
+_TERMUX_PREFIX: str = "/data/data/com.termux/files/usr"
+
+
+def default_provider_name() -> str:
+    """Auto-select the playback provider for this host.
+
+    Precedence:
+    1. ``$AAWAZZ_PLAYBACK_PROVIDER`` env override — any value, no validation.
+    2. Termux/Android with ``termux-media-player`` on PATH → ``"termux-media"``
+       (no PulseAudio/ALSA daemon needed on Android).
+    3. Fallback → ``"shell"`` (the paplay/aplay/afplay probe).
+
+    Per-call ``speak(playback_provider=...)`` still wins over this default.
+
+    Termux detection: ``$PREFIX`` is set in Termux's native shell, but
+    ``proot-distro`` chroots into a fresh env where ``$PREFIX`` is unset.
+    Probe the directory too — proot bind-mounts ``/data/data/com.termux``
+    into the distro so termux-* binaries are reachable on PATH, which is
+    the actual condition we care about.
+    """
+    override = os.environ.get("AAWAZZ_PLAYBACK_PROVIDER")
+    if override:
+        return override
+
+    prefix = os.environ.get("PREFIX", "")
+    is_termux = (
+        prefix.startswith(_TERMUX_PREFIX) or os.path.isdir(_TERMUX_PREFIX)
+    )
+    if is_termux and shutil.which("termux-media-player"):
+        return "termux-media"
+
+    return "shell"

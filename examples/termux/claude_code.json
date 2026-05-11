@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aawazz": {
+      "command": "/PATH/TO/aawazz-mcp/.venv/bin/aawazz-mcp",
+      "args": []
+    }
+  }
+}

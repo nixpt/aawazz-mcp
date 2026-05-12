@@ -1,0 +1,24 @@
+# Routing config for Termux/Android hosts.
+#
+# tiny-tts pulls PyTorch, and pytorch's aarch64 oneDNN JIT (xbyak_aarch64)
+# SIGILLs on Android because /sys/.../midr_el1 is permission-denied — the
+# JIT can't probe CPU features, picks the wrong ISA, and emits an
+# instruction the CPU traps on. Piper is pure-ONNX and shares the
+# runtime that Moonshine already runs cleanly on this host.
+#
+# Install + voice download (one-time, ~60 MB):
+#
+#     pip install "aawazz-mcp[piper]"
+#     python -m piper.download_voices \
+#         --download-dir ~/.local/share/aawazz/piper-voices \
+#         en_US-amy-medium
+#
+# Then copy this file to ~/.config/aawazz/aawazz.toml.
+
+[tts.routing]
+en      = ["piper"]
+default = ["piper"]
+
+[stt.routing]
+en      = ["moonshine"]
+default = ["moonshine"]

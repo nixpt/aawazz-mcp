@@ -229,13 +229,14 @@ class LocalBackend(Backend):
             )
 
         # Translate voice for synthesis. tiny-tts uses MALE; gtts ignores
-        # voice; other providers receive ``voice`` as-is.
+        # voice; other providers treat the legacy "MALE" default as "pick
+        # whatever default voice you have" rather than a literal voice id.
         if provider.name == "tiny-tts":
             req_voice = "MALE" if is_dsp_voice else normalized_voice
         elif provider.name == "gtts":
             req_voice = None
         else:
-            req_voice = voice
+            req_voice = None if voice == "MALE" else voice
 
         # Resolve output_path: explicit absolute path wins; else default dir
         # + hashed name. ``default_output_dir`` falls back to tempdir if

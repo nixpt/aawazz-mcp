@@ -3,6 +3,7 @@
 Contract:
     has_input_device() -> bool
     record_to_wav(duration_s, output_path, sample_rate=16000) -> dict
+    default_provider_name() -> str
 
 Returns: ``{audio_path, audio_duration_s, sample_rate}`` on success, or
 ``{audio_path: None, error: str, hint: str}`` on failure.
@@ -21,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 from typing import Any
 
 _LOG = logging.getLogger("aawazz.audio")
@@ -322,3 +325,37 @@ def record_to_wav_hard_timeout(
                 os.unlink(pid_file)
             except Exception:
                 pass
+
+
+# ── Default-provider selection ──────────────────────────────────────────────
+
+# Termux on Android exposes its PREFIX as ``/data/data/com.termux/files/usr``.
+# Detecting that directory (rather than just ``$PREFIX``) is reliable inside
+# proot-distro, which starts with a clean env but bind-mounts the Termux
+# filesystem so the termux-* binaries are reachable on PATH.
+_TERMUX_PREFIX: str = "/data/data/com.termux/files/usr"
+
+
+def default_provider_name() -> str:
+    """Auto-select the capture provider for this host.
+
+    Precedence:
+    1. ``$AAWAZZ_CAPTURE_PROVIDER`` env override — any value, no validation.
+    2. Termux/Android with ``termux-microphone-record`` on PATH →
+       ``"termux-mic"`` (sounddevice can't reach PortAudio through proot).
+    3. Fallback → ``"sounddevice"``.
+
+    Per-call ``listen(capture_provider=...)`` still wins over this default.
+    """
+    override = os.environ.get("AAWAZZ_CAPTURE_PROVIDER")
+    if override:
+        return override
+
+    prefix = os.environ.get("PREFIX", "")
+    is_termux = (
+        prefix.startswith(_TERMUX_PREFIX) or os.path.isdir(_TERMUX_PREFIX)
+    )
+    if is_termux and shutil.which("termux-microphone-record"):
+        return "termux-mic"
+
+    return "sounddevice"

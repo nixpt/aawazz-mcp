@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from aawazz_mcp.audio import capture as _capture_audio
 from aawazz_mcp.audio import playback as _playback_audio
 from aawazz_mcp.audio.paths import (
     default_output_dir,
@@ -578,10 +579,12 @@ class LocalBackend(Backend):
 
         capture_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Resolve the capture provider (default: sounddevice). The
+        # Resolve the capture provider. The default helper auto-picks
+        # termux-mic on Termux/Android hosts (where sounddevice can't reach
+        # PortAudio through proot), falling back to sounddevice elsewhere.
         # ``record()`` contract: hard-timeout subprocess isolation, raises
         # ProviderError with hint on mic-mute / sandbox / no-device.
-        cap_name = capture_provider or "sounddevice"
+        cap_name = capture_provider or _capture_audio.default_provider_name()
         try:
             capturer = _registry.get_capture(cap_name)
         except KeyError:

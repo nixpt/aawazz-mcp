@@ -32,7 +32,12 @@ async def test_listen_returns_capture_error_before_transcribe(
     )
 
     backend = LocalBackend(AawazzConfig.from_env())
-    result = await backend.listen(duration_s=1.0, save_audio=False)
+    # Pin to sounddevice so the monkeypatched record_to_wav_hard_timeout is
+    # the helper actually exercised — the auto-selected default depends on
+    # the host (termux-mic on Android).
+    result = await backend.listen(
+        duration_s=1.0, save_audio=False, capture_provider="sounddevice"
+    )
 
     assert result["backend"] == "local"
     assert "mic capture failed" in result["error"]
@@ -74,7 +79,12 @@ async def test_listen_returns_timeout_error_when_capture_wedges(
     )
 
     backend = LocalBackend(AawazzConfig.from_env())
-    result = await backend.listen(duration_s=1.0, save_audio=False)
+    # Pin to sounddevice so the monkeypatched record_to_wav_hard_timeout is
+    # the helper actually exercised — the auto-selected default depends on
+    # the host (termux-mic on Android).
+    result = await backend.listen(
+        duration_s=1.0, save_audio=False, capture_provider="sounddevice"
+    )
 
     assert result["backend"] == "local"
     assert "timed out" in result["error"]

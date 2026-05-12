@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from aawazz_mcp.audio import termux_tts as _termux_tts
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.dispatcher import Dispatcher
+from aawazz_mcp.vision import termux_camera as _termux_camera
 
 INSTRUCTIONS_MD = """\
 # aawazz — voice for any agent
@@ -29,6 +30,9 @@ Local-CPU TTS + STT MCP server. Tools:
 - `transcribe(audio_path, language="en", model_arch="tiny_streaming")` — STT on a WAV file.
 - `listen(duration_s=5.0, language="en")` — capture mic for `duration_s` and transcribe.
 - `voices_list()` — voice/language/model catalog + capability probe (no model load).
+- `capture_photo(camera_id=0)` — Termux/Android only: snap a JPEG via the
+  device camera and return its path (no LLM, no vision model — just the
+  capture stage; pair with `respond` / `describe` for scene understanding).
 
 By default this server bundles its own copies of tiny-tts and Moonshine. If you
 have an `aawazz-mouth` / `aawazz-ears` FastAPI pair running on the same host,
@@ -318,6 +322,39 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             pitch=pitch,
             rate=rate,
             stream=stream,
+        )
+
+    @mcp.tool()
+    async def capture_photo(
+        camera_id: int = 0,
+        output_path: str | None = None,
+    ) -> dict:
+        """Capture a JPEG from the device camera. Termux/Android only.
+
+        Wraps Termux:API's ``termux-camera-photo``. Returns the path to
+        the saved file plus dimensions and size; does NOT do any vision
+        analysis or LLM call. Pair with ``respond()`` (or an upcoming
+        ``describe()`` tool) to feed the image to a multimodal LLM.
+
+        Args:
+            camera_id: Camera index from the device's ``Camera2`` list.
+                ``0`` is the rear camera on most devices. Enumerate via
+                :func:`aawazz_mcp.vision.termux_camera.available_cameras`.
+            output_path: Absolute path to save the JPEG. Default: under
+                ``/sdcard/aawazz-eyes/<ts>-cam<id>-<rand>.jpg`` —
+                ``/sdcard`` is the only directory reliably reachable by
+                both proot-distro and the Termux:API service. Override
+                the dir via ``$AAWAZZ_TERMUX_CAMERA_DIR``.
+
+        Returns:
+            On success: ``{image_path, width, height, size_bytes,
+            camera_id, latency_ms}``.
+            On failure: ``{error, hint?, stderr?, latency_ms?}``.
+        """
+        return await asyncio.to_thread(
+            _termux_camera.capture,
+            camera_id=camera_id,
+            output_path=output_path,
         )
 
     @mcp.tool()

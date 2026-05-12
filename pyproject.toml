@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aawazz-mcp"
-version = "1.4.0"
+version = "1.5.0"
 description = "Portable local-CPU TTS + STT MCP server (Hindi/Urdu/Nepali आवाज़ — voice/sound). Bundles tiny-tts + Moonshine; optional remote-FastAPI mode."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -30,6 +30,7 @@ dependencies = [
     "soundfile>=0.12",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
+    "scipy>=1.11",
     "pydantic>=2.5",
     "tiny-tts>=0.3.2",
     "moonshine-voice>=0.0.59",

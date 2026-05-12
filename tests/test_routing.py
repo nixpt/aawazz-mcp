@@ -26,7 +26,17 @@ def test_builtin_default_matches_v1_2_behavior() -> None:
 
 
 def test_load_no_file_no_env_no_cli_returns_builtin(tmp_path: Path) -> None:
-    cfg = RoutingConfig.load(file_path=None, env={})
+    """Built-in defaults apply when no config file is resolvable.
+
+    Passing ``env={}`` looks like "no env" but the loader still calls
+    ``Path.home()`` internally, so on hosts where ``~/.config/aawazz/
+    aawazz.toml`` exists, the file would be read. Pin AAWAZZ_ROUTING_FILE
+    to a non-existent path so the resolution is host-independent.
+    """
+    cfg = RoutingConfig.load(
+        file_path=None,
+        env={"AAWAZZ_ROUTING_FILE": str(tmp_path / "no-such.toml")},
+    )
     assert cfg.tts == {"en": ("tiny-tts",), "default": ("gtts",)}
 
 

@@ -6,7 +6,8 @@ Moonshine, then dispatches the transcript via:
   - ``type``      keystroke injection into the focused window
                   (xdotool on X11, wtype/ydotool on Wayland, osascript on macOS)
   - ``clipboard`` paste into the system clipboard
-                  (xclip/xsel on X11, wl-copy on Wayland, pbcopy on macOS)
+                  (xclip/xsel on X11, wl-copy on Wayland, pbcopy on macOS,
+                  termux-clipboard-set on Android/Termux)
   - ``stdout``    print transcript only
 
 Designed for hotkey binding when typing is inconvenient (wet hands, cooking,
@@ -57,12 +58,18 @@ DEFAULT_ARCH = "tiny_streaming"
 # ---------------------------------------------------------------- session/host
 
 
+_TERMUX_PREFIX: str = "/data/data/com.termux/files/usr"
+
+
 def _detect_session_type() -> str:
-    """Return ``"wayland" | "x11" | "darwin" | "unknown"``.
+    """Return ``"wayland" | "x11" | "darwin" | "termux" | "unknown"``.
 
     macOS is detected via ``sys.platform``; Linux via ``XDG_SESSION_TYPE`` then
-    ``WAYLAND_DISPLAY`` / ``DISPLAY`` fallbacks. Headless boxes return
-    ``"unknown"`` and the only viable mode is ``stdout``.
+    ``WAYLAND_DISPLAY`` / ``DISPLAY`` fallbacks. Termux/Android is detected
+    only after display checks — Termux:X11 users keep the X11 clipboard path
+    when they have a display set up, and headless Termux falls into the
+    Android-clipboard branch. Headless non-Termux boxes return ``"unknown"``
+    and the only viable mode is ``stdout``.
     """
     if sys.platform == "darwin":
         return "darwin"
@@ -75,6 +82,11 @@ def _detect_session_type() -> str:
         return "wayland"
     if os.environ.get("DISPLAY"):
         return "x11"
+    # Termux on Android — native shell sets $PREFIX, proot-distro doesn't
+    # but the Termux PREFIX dir is bind-mounted in. Check both.
+    prefix = os.environ.get("PREFIX", "")
+    if prefix.startswith(_TERMUX_PREFIX) or os.path.isdir(_TERMUX_PREFIX):
+        return "termux"
     return "unknown"
 
 
@@ -128,6 +140,11 @@ def _resolve_clipboarder(session: str) -> tuple[list[str], str] | None:
         ],
         "darwin": [
             (["pbcopy"], "pbcopy"),
+        ],
+        "termux": [
+            # Termux:API addon. Writes to Android's system clipboard
+            # (visible to all apps), not just to a per-app buffer.
+            (["termux-clipboard-set"], "termux-clipboard-set"),
         ],
     }
     for cmd, name in table.get(session, []):
@@ -353,7 +370,8 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "clipboard" and _resolve_clipboarder(session) is None:
         sys.stderr.write(
             f"error: no clipboarder available for session={session!r}.\n"
-            "  install: xclip/xsel (X11), wl-copy (Wayland), pbcopy (macOS), or use --mode stdout\n"
+            "  install: xclip/xsel (X11), wl-copy (Wayland), pbcopy (macOS),\n"
+            "    termux-clipboard-set via Termux:API (Android), or use --mode stdout\n"
         )
         return EXIT_NO_DISPATCHER
 

@@ -8,11 +8,13 @@ on shutdown.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
+from aawazz_mcp.audio import termux_tts as _termux_tts
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.dispatcher import Dispatcher
 
@@ -22,6 +24,8 @@ INSTRUCTIONS_MD = """\
 Local-CPU TTS + STT MCP server. Tools:
 
 - `speak(text, voice="MALE", speed=1.0)` — synthesize speech (tiny-tts).
+- `say(text, engine=None, pitch=1.0, rate=1.0, stream="NOTIFICATION")` — Termux/Android only:
+  speech-only via Android TextToSpeech, no WAV output, low latency.
 - `transcribe(audio_path, language="en", model_arch="tiny_streaming")` — STT on a WAV file.
 - `listen(duration_s=5.0, language="en")` — capture mic for `duration_s` and transcribe.
 - `voices_list()` — voice/language/model catalog + capability probe (no model load).
@@ -253,6 +257,63 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             temperature=temperature,
             timeout_s=timeout_s,
             lang_mismatch=lang_mismatch,
+        )
+
+    @mcp.tool()
+    async def say(
+        text: str,
+        engine: str | None = None,
+        language: str = "en",
+        region: str | None = None,
+        variant: str | None = None,
+        pitch: float = 1.0,
+        rate: float = 1.0,
+        stream: str = "NOTIFICATION",
+    ) -> dict:
+        """Speak text via Android TextToSpeech — no WAV, no file output.
+
+        Distinct from :func:`speak`: routes through the host's system TTS
+        engine (Termux:API ``termux-tts-speak``) and plays directly to an
+        Android audio stream. Returns after the engine finishes
+        synthesizing + playing, with no persisted ``audio_path``.
+
+        Useful for low-latency one-shot feedback where the caller doesn't
+        need a WAV file. Termux/Android only — falls back to a structured
+        error on hosts where ``termux-tts-speak`` isn't on PATH.
+
+        Args:
+            text: 1..4000 characters.
+            engine: TTS engine package name (e.g. ``"com.samsung.SMT"``,
+                ``"com.google.android.tts"``). Default: Android system
+                default. Enumerate installed engines via
+                :func:`aawazz_mcp.audio.termux_tts.available_engines`.
+            language: ISO 639-1 code, e.g. ``"en"``.
+            region: Region of language, e.g. ``"US"`` for ``en_US``.
+            variant: Language variant (engine-defined).
+            pitch: 0.5..2.0. 1.0 is normal pitch; higher = brighter,
+                lower = deeper.
+            rate: 0.5..2.0. 1.0 is normal rate; 0.5 is half speed,
+                2.0 is double speed.
+            stream: Android audio stream — one of ``ALARM``, ``MUSIC``,
+                ``NOTIFICATION``, ``RING``, ``SYSTEM``, ``VOICE_CALL``.
+                Default ``"NOTIFICATION"`` (auto-ducks music, respects
+                ringer mode separately from media volume).
+
+        Returns:
+            On success: ``{engine, language, region, variant, pitch,
+            rate, stream, text_length, latency_ms, played: true}``.
+            On failure: ``{error, hint?, stderr?, latency_ms?}``.
+        """
+        return await asyncio.to_thread(
+            _termux_tts.speak,
+            text=text,
+            engine=engine,
+            language=language,
+            region=region,
+            variant=variant,
+            pitch=pitch,
+            rate=rate,
+            stream=stream,
         )
 
     @mcp.tool()

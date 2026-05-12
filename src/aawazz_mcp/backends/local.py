@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from aawazz_mcp.audio import playback as _playback_audio
 from aawazz_mcp.audio.paths import (
     default_output_dir,
     hashed_wav_name,
@@ -305,7 +306,7 @@ class LocalBackend(Backend):
 
         played = False
         if play:
-            pb_name = playback_provider or "shell"
+            pb_name = playback_provider or _playback_audio.default_provider_name()
             try:
                 player = _registry.get_playback(pb_name)
                 played = bool(await player.play(audio_path))
@@ -966,7 +967,9 @@ class LocalBackend(Backend):
         first_token_at: float | None = None
         played_any = False
         chunks_played = 0
-        playback_provider = _registry.get_playback("shell")
+        playback_provider = _registry.get_playback(
+            _playback_audio.default_provider_name()
+        )
 
         t0 = time.time()
 

@@ -24,10 +24,10 @@ from aawazz_mcp.server import build_server
 # ---------------------------------------------------------------------------
 
 
-def test_build_server_registers_6_tools_and_health_resource(
+def test_build_server_registers_7_tools_and_health_resource(
     clean_aawazz_env: None,
 ) -> None:
-    """v1.0 contract tools + v1.4 ``respond`` + Termux ``say`` + health resource."""
+    """v1.0 contract tools + v1.4 ``respond`` + Termux ``say`` + ``capture_photo`` + health resource."""
     mcp = build_server(AawazzConfig.from_env())
 
     tool_names = {t.name for t in mcp._tool_manager.list_tools()}
@@ -38,6 +38,7 @@ def test_build_server_registers_6_tools_and_health_resource(
         "listen",
         "voices_list",
         "respond",
+        "capture_photo",
     }
 
     resource_uris = {str(r.uri) for r in mcp._resource_manager.list_resources()}
@@ -61,6 +62,7 @@ def test_build_server_remote_mode_registers_same_tool_surface(
         "listen",
         "voices_list",
         "respond",
+        "capture_photo",
     }
 
 

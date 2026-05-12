@@ -105,7 +105,7 @@ def speak(
     variant: str | None = None,
     pitch: float = 1.0,
     rate: float = 1.0,
-    stream: str = "NOTIFICATION",
+    stream: str = "MUSIC",
 ) -> dict:
     """Speak ``text`` via Android TextToSpeech. Returns a result dict.
 

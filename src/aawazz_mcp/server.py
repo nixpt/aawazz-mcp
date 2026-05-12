@@ -24,7 +24,7 @@ INSTRUCTIONS_MD = """\
 Local-CPU TTS + STT MCP server. Tools:
 
 - `speak(text, voice="MALE", speed=1.0)` — synthesize speech (tiny-tts).
-- `say(text, engine=None, pitch=1.0, rate=1.0, stream="NOTIFICATION")` — Termux/Android only:
+- `say(text, engine=None, pitch=1.0, rate=1.0, stream="MUSIC")` — Termux/Android only:
   speech-only via Android TextToSpeech, no WAV output, low latency.
 - `transcribe(audio_path, language="en", model_arch="tiny_streaming")` — STT on a WAV file.
 - `listen(duration_s=5.0, language="en")` — capture mic for `duration_s` and transcribe.
@@ -268,7 +268,7 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
         variant: str | None = None,
         pitch: float = 1.0,
         rate: float = 1.0,
-        stream: str = "NOTIFICATION",
+        stream: str = "MUSIC",
     ) -> dict:
         """Speak text via Android TextToSpeech — no WAV, no file output.
 
@@ -296,8 +296,12 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
                 2.0 is double speed.
             stream: Android audio stream — one of ``ALARM``, ``MUSIC``,
                 ``NOTIFICATION``, ``RING``, ``SYSTEM``, ``VOICE_CALL``.
-                Default ``"NOTIFICATION"`` (auto-ducks music, respects
-                ringer mode separately from media volume).
+                Default ``"MUSIC"``: same channel as media playback,
+                so audio is reliably audible at the user's media volume.
+                ``NOTIFICATION`` auto-ducks music and respects ringer
+                mode but is often muted on Android devices (notification
+                volume = 0); use it explicitly when you actually want
+                notification-style behaviour.
 
         Returns:
             On success: ``{engine, language, region, variant, pitch,

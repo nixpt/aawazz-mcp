@@ -159,16 +159,16 @@ def test_speak_returns_played_true_on_exit_0(monkeypatch) -> None:
     assert out["language"] == "en"
     assert out["pitch"] == 1.2
     assert out["rate"] == 0.9
-    assert out["stream"] == "NOTIFICATION"
+    assert out["stream"] == "MUSIC"
     assert out["text_length"] == len("hello world")
     assert isinstance(out["latency_ms"], int)
 
-    # argv shape: [bin, -l, en, -p, 1.2, -r, 0.9, -s, NOTIFICATION]
+    # argv shape: [bin, -l, en, -p, 1.2, -r, 0.9, -s, MUSIC]
     assert seen["argv"][0].endswith("/termux-tts-speak")
     assert "-l" in seen["argv"] and "en" in seen["argv"]
     assert "-p" in seen["argv"] and "1.2" in seen["argv"]
     assert "-r" in seen["argv"] and "0.9" in seen["argv"]
-    assert "-s" in seen["argv"] and "NOTIFICATION" in seen["argv"]
+    assert "-s" in seen["argv"] and "MUSIC" in seen["argv"]
     assert seen["input"] == b"hello world"
 
 

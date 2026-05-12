@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from aawazz_mcp import registry as _registry
+from aawazz_mcp.audio import dialogue as _dialogue
 from aawazz_mcp.audio import termux_tts as _termux_tts
+from aawazz_mcp.audio.paths import default_output_dir
 from aawazz_mcp.config import AawazzConfig
 from aawazz_mcp.dispatcher import Dispatcher
 from aawazz_mcp.vision import termux_camera as _termux_camera
@@ -33,6 +39,8 @@ Local-CPU TTS + STT MCP server. Tools:
 - `capture_photo(camera_id=0)` — Termux/Android only: snap a JPEG via the
   device camera and return its path (no LLM, no vision model — just the
   capture stage; pair with `respond` / `describe` for scene understanding).
+- `dialogue(turns, stereo=False, pause_ms=300, play=False)` — synthesize a
+  multi-turn conversation; each turn picks its own voice. Returns one WAV.
 
 By default this server bundles its own copies of tiny-tts and Moonshine. If you
 have an `aawazz-mouth` / `aawazz-ears` FastAPI pair running on the same host,
@@ -356,6 +364,181 @@ def build_server(cfg: AawazzConfig) -> FastMCP:
             camera_id=camera_id,
             output_path=output_path,
         )
+
+    @mcp.tool()
+    async def dialogue(
+        turns: list[dict],
+        output_path: str | None = None,
+        play: bool = False,
+        pause_ms: int = 300,
+        stereo: bool = False,
+        speed: float = 1.0,
+        language: str = "en",
+        tts_provider: str | None = None,
+        post_process: list[str] | None = None,
+        playback_provider: str | None = None,
+    ) -> dict:
+        """Synthesize a multi-turn dialogue and concatenate into one WAV.
+
+        Each turn is a ``{"voice": str, "text": str}`` dict. Different
+        voices per turn give the conversational feel — pick e.g. one
+        Piper voice for each speaker (``piper:en_US-amy-medium`` and
+        ``piper:en_US-ryan-medium``).
+
+        Stereo mode: when exactly two distinct voices appear in ``turns``,
+        ``stereo=True`` places the first on the left channel and the
+        second on the right — natural two-speaker spatial separation.
+        For 1 or 3+ unique voices, ``stereo=True`` falls back to mono
+        because the L/R-per-voice mapping doesn't generalise cleanly.
+
+        Args:
+            turns: 1..50 turns. Each ``{"voice": str, "text": str}``.
+                Text is 1..4000 chars; voice is a provider-specific ID
+                (e.g. ``piper:en_US-amy-medium``) — same shape as
+                :func:`speak`'s ``voice`` arg.
+            output_path: Absolute path to write the concatenated WAV.
+                Default: under ``$AAWAZZ_HOME/mouth/dialogue-<ts>-<hash>.wav``.
+            play: Autoplay the final WAV via the routed playback provider.
+            pause_ms: Inter-turn silence in milliseconds, 0..2000.
+                Default 300 — natural conversation cadence.
+            stereo: See above.
+            speed, language, tts_provider, post_process, playback_provider:
+                Defaults applied to every turn's :func:`speak` call.
+
+        Returns:
+            On success: ``{audio_path, duration_s, sample_rate, channels,
+            latency_ms, turn_count, played, turn_timings:
+            [{voice, text_length, audio_path?, duration_s, latency_ms},
+            ...]}``.
+            On failure: ``{error, hint?, turn_index?, ...}``.
+        """
+        if not turns:
+            return {"error": "turns is empty; provide 1..50 turns"}
+        if len(turns) > 50:
+            return {
+                "error": f"too many turns ({len(turns)}); max 50",
+                "turn_count": len(turns),
+            }
+
+        # Pre-validate every turn so we don't synthesize a partial dialogue
+        # only to discover the 7th turn is malformed.
+        for i, turn in enumerate(turns):
+            if not isinstance(turn, dict):
+                return {"error": f"turn {i} is not a dict", "turn_index": i}
+            if "voice" not in turn or "text" not in turn:
+                return {
+                    "error": f"turn {i} missing voice or text",
+                    "turn_index": i,
+                }
+            text = turn["text"]
+            if not isinstance(text, str) or not text.strip():
+                return {
+                    "error": f"turn {i} text is empty",
+                    "turn_index": i,
+                }
+            if len(text) > 4000:
+                return {
+                    "error": f"turn {i} text length {len(text)} > 4000",
+                    "turn_index": i,
+                }
+
+        t0 = time.time()
+        turn_timings: list[dict] = []
+        turn_paths: list[str] = []
+        turn_voices: list[str] = [t["voice"] for t in turns]
+
+        # Per-turn synthesis. Each goes to its own tempfile so the
+        # default-output-dir doesn't fill with intermediates.
+        tmp_files: list[Path] = []
+        try:
+            for i, turn in enumerate(turns):
+                tmp = tempfile.NamedTemporaryFile(
+                    prefix=f"aawazz-dialogue-{i:02d}-",
+                    suffix=".wav",
+                    delete=False,
+                )
+                tmp.close()
+                tmp_files.append(Path(tmp.name))
+                result = await dispatcher.speak(
+                    text=turn["text"],
+                    voice=turn["voice"],
+                    speed=speed,
+                    output_path=tmp.name,
+                    play=False,
+                    language=language,
+                    tts_provider=tts_provider,
+                    post_process=post_process,
+                    playback_provider=None,
+                )
+                if result.get("error"):
+                    return {
+                        "error": f"turn {i} synthesis failed: {result['error']}",
+                        "turn_index": i,
+                        "turn_voice": turn["voice"],
+                        **{
+                            k: v
+                            for k, v in result.items()
+                            if k in ("hint", "requested_tts_provider")
+                        },
+                    }
+                turn_paths.append(result["audio_path"])
+                turn_timings.append(
+                    {
+                        "voice": turn["voice"],
+                        "text_length": len(turn["text"]),
+                        "duration_s": float(result.get("duration_s", 0.0)),
+                        "latency_ms": int(result.get("latency_ms", 0)),
+                    }
+                )
+
+            # Compose. Pure-numpy; runs in this coroutine since CPU work
+            # for typical dialogues (<1 min total) is well under a second.
+            import soundfile as sf  # noqa: PLC0415
+
+            audio, sample_rate = _dialogue.compose(
+                turn_paths=turn_paths,
+                turn_voices=turn_voices,
+                pause_ms=pause_ms,
+                stereo=stereo,
+            )
+
+            # Resolve output path.
+            if output_path is None:
+                out_dir = default_output_dir()
+                stamp = int(time.time())
+                output_path = str(out_dir / f"dialogue-{stamp}.wav")
+            else:
+                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+            sf.write(output_path, audio, sample_rate, subtype="PCM_16")
+            info = sf.info(output_path)
+
+            played = False
+            if play:
+                # Mirror the speak()-side default of "shell" so this PR
+                # doesn't depend on the playback default-resolution helper
+                # introduced in PR #12 (termux-media). Hosts that need
+                # a different provider can pass ``playback_provider=``.
+                pb_name = playback_provider or "shell"
+                try:
+                    player = _registry.get_playback(pb_name)
+                    played = bool(await player.play(output_path))
+                except KeyError:
+                    pass  # silent — same shape as speak()
+
+            return {
+                "audio_path": output_path,
+                "duration_s": float(info.duration),
+                "sample_rate": int(info.samplerate),
+                "channels": int(info.channels),
+                "latency_ms": int((time.time() - t0) * 1000),
+                "turn_count": len(turns),
+                "played": played,
+                "turn_timings": turn_timings,
+            }
+        finally:
+            for f in tmp_files:
+                f.unlink(missing_ok=True)
 
     @mcp.tool()
     async def voices_list() -> dict:
